@@ -10,6 +10,8 @@ BUILD_DIR="$ROOT/Release"
 APP="$BUILD_DIR/SimNap.app"
 CONFIGURATION="release"
 INSTALL_DIR=""
+CLI_DIR=""
+SELF_TEST_CLI_LINK=0
 VERSION_SOURCE="$ROOT/Host/Sources/SimulatorNetworkHostCore/SimNapVersion.swift"
 VERSION=$(sed -n 's/.*static let current = "\(.*\)".*/\1/p' "$VERSION_SOURCE")
 
@@ -18,8 +20,10 @@ while [ $# -gt 0 ]; do
     --debug)   CONFIGURATION="debug" ;;
     --install) INSTALL_DIR="/Applications" ;;
     --install-to) INSTALL_DIR="${2:?--install-to needs a directory}"; shift ;;
+    --cli-dir) CLI_DIR="${2:?--cli-dir needs a directory}"; shift ;;
+    --self-test-cli-link) SELF_TEST_CLI_LINK=1 ;;
     -h|--help)
-      echo "usage: $(basename "$0") [--debug] [--install | --install-to <dir>]"
+      echo "usage: $(basename "$0") [--debug] [--install | --install-to <dir>] [--cli-dir <dir>]"
       exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -28,6 +32,72 @@ done
 
 log() { echo "[build-app] $*"; }
 die() { echo "[build-app] FAILED: $*" >&2; exit 1; }
+
+# Places the CLI symlink without destroying anything it does not own.
+#
+# `ln -sf` would silently replace whatever sits at that path, which may be
+# another tool or a hand-managed install. Only an absent path, or a symlink
+# already pointing into a SimNap bundle, may be written.
+#
+# Returns 0 when linked, 1 when the path is occupied by something else.
+# `-L` is tested before `-e` because `-e` is false for a broken symlink.
+link_cli() {
+  local target=$1 link=$2
+  if [ -L "$link" ]; then
+    case "$(readlink "$link")" in
+      */SimNap.app/Contents/MacOS/simnap-cli) ln -sf "$target" "$link"; return 0 ;;
+      *) return 1 ;;
+    esac
+  elif [ -e "$link" ]; then
+    return 1
+  fi
+  ln -s "$target" "$link"
+}
+
+if [ "$SELF_TEST_CLI_LINK" -eq 1 ]; then
+  scratch=$(mktemp -d)
+  trap 'rm -rf "$scratch"' EXIT
+  ours="/Applications/SimNap.app/Contents/MacOS/simnap-cli"
+  other="$scratch/another-simnap"
+  : > "$other"
+  failures=0
+  check() {
+    if [ "$2" = "$3" ]; then echo "  PASS  $1"; else echo "  FAIL  $1 (expected $2, got $3)"; failures=$((failures + 1)); fi
+  }
+
+  # 1. nothing there yet
+  link_cli "$ours" "$scratch/a" && r=linked || r=refused
+  check "absent destination is linked" "linked" "$r"
+  check "  and points at the CLI" "$ours" "$(readlink "$scratch/a")"
+
+  # 2. an existing SimNap symlink is ours to update
+  ln -s "/Applications/SimNap.app/Contents/MacOS/simnap-cli" "$scratch/b"
+  link_cli "$ours" "$scratch/b" && r=linked || r=refused
+  check "existing SimNap symlink is updated" "linked" "$r"
+
+  # 3. the same, dangling
+  ln -s "/nonexistent/SimNap.app/Contents/MacOS/simnap-cli" "$scratch/c"
+  link_cli "$ours" "$scratch/c" && r=linked || r=refused
+  check "broken SimNap symlink is replaced" "linked" "$r"
+  check "  and now points at the CLI" "$ours" "$(readlink "$scratch/c")"
+
+  # 4. someone else's symlink
+  ln -s "$other" "$scratch/d"
+  link_cli "$ours" "$scratch/d" && r=linked || r=refused
+  check "unrelated symlink is refused" "refused" "$r"
+  check "  and is left untouched" "$other" "$(readlink "$scratch/d")"
+
+  # 5. someone else's executable
+  printf '#!/bin/sh\necho other\n' > "$scratch/e"; chmod +x "$scratch/e"
+  before=$(shasum "$scratch/e" | awk '{print $1}')
+  link_cli "$ours" "$scratch/e" && r=linked || r=refused
+  check "unrelated executable is refused" "refused" "$r"
+  check "  and is left byte-for-byte" "$before" "$(shasum "$scratch/e" | awk '{print $1}')"
+
+  [ "$failures" -eq 0 ] || die "$failures CLI-link checks failed"
+  log "CLI link checks passed"
+  exit 0
+fi
 
 [ -n "$VERSION" ] || die "could not read the version from $VERSION_SOURCE"
 log "Version $VERSION"
@@ -185,20 +255,27 @@ if [ -n "$INSTALL_DIR" ]; then
   # and changes nothing about the user's shell configuration.
   CLI_TARGET="$DEST/Contents/MacOS/simnap-cli"
   CLI_LINK=""
-  IFS=':' read -r -a PATH_PARTS <<< "$PATH"
-  for candidate in "${PATH_PARTS[@]}"; do
-    [ -d "$candidate" ] && [ -w "$candidate" ] || continue
-    CLI_LINK="$candidate/simnap"
-    break
-  done
+  if [ -n "$CLI_DIR" ]; then
+    [ -d "$CLI_DIR" ] && [ -w "$CLI_DIR" ] || die "--cli-dir $CLI_DIR is not a writable directory"
+    CLI_LINK="$CLI_DIR/simnap"
+  else
+    IFS=':' read -r -a PATH_PARTS <<< "$PATH"
+    for candidate in "${PATH_PARTS[@]}"; do
+      [ -d "$candidate" ] && [ -w "$candidate" ] || continue
+      CLI_LINK="$candidate/simnap"
+      break
+    done
+  fi
 
-  if [ -n "$CLI_LINK" ]; then
-    ln -sf "$CLI_TARGET" "$CLI_LINK"
+  if [ -z "$CLI_LINK" ]; then
+    log "No writable directory on PATH. Install the CLI with:"
+    log "  sudo ln -sf \"$CLI_TARGET\" /usr/local/bin/simnap"
+  elif link_cli "$CLI_TARGET" "$CLI_LINK"; then
     [ "$("$CLI_LINK" --version)" = "$VERSION" ] || die "the CLI installed at $CLI_LINK does not run"
     log "CLI installed: $CLI_LINK -> simnap $VERSION"
   else
-    log "No writable directory on PATH. Install the CLI with:"
-    log "  sudo ln -sf \"$CLI_TARGET\" /usr/local/bin/simnap"
+    log "Not installing the CLI: $CLI_LINK already exists and is not ours."
+    log "Remove it, or choose somewhere else with --cli-dir <dir>."
   fi
 else
   log "Not installed. Re-run with --install (or --install-to <dir>)."

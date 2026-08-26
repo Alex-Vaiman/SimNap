@@ -1,9 +1,39 @@
 # SimNap
 
-Deterministic application-level HTTP/HTTPS network control for cooperating
-iOS Simulator apps. Flip a booted Simulator offline/online from a CLI or
-menu bar, and every integrated app on that Simulator reacts immediately —
-including apps that were killed while offline and just cold-launched.
+<p align="center">
+  <strong>Deterministic offline testing for iOS Simulator apps.</strong><br>
+  Toggle one Simulator from the menu bar or CLI and every integrated app reacts immediately.
+</p>
+
+<p align="center">
+  <img alt="Swift 5.9+" src="https://img.shields.io/badge/Swift-5.9%2B-F05138?logo=swift&logoColor=white">
+  <img alt="iOS 14+" src="https://img.shields.io/badge/iOS-14%2B-000000?logo=apple&logoColor=white">
+  <img alt="macOS 12+" src="https://img.shields.io/badge/macOS-12%2B-000000?logo=apple&logoColor=white">
+  <a href="LICENSE.md"><img alt="MIT License" src="https://img.shields.io/badge/License-MIT-2563EB.svg"></a>
+</p>
+
+SimNap provides application-level HTTP/HTTPS network control for cooperating
+iOS Simulator apps. Flip a booted Simulator offline or online from a CLI or
+menu bar and every integrated app on that Simulator reacts immediately —
+including an app that cold-launches while the Simulator is already offline.
+
+## Why SimNap
+
+- **Per-Simulator control:** multiple booted Simulators can hold independent states.
+- **Reliable cold launches:** persisted state is reconciled before new traffic starts.
+- **Real transport failures:** requests fail with `timedOut` or
+  `notConnectedToInternet`, not a UI-only reachability flag.
+- **One-line app integration:** call `SimulatorNetwork.start()` at launch.
+- **Two control surfaces:** use the `simnap` CLI or the optional menu bar app.
+- **Tested end to end:** the verification suite drives real processes and real
+  iOS Simulators without mocks.
+
+## Requirements
+
+- iOS 14 or later for the integrated app.
+- macOS 12 or later and Xcode with an iOS Simulator runtime for the host tools.
+- Swift 5.9 or later.
+- `jq` only when running the full verification suite.
 
 ## What it actually controls
 
@@ -50,10 +80,28 @@ macOS-only code.
 - **`Demo/SimNapDemo`** — a throwaway iOS app exercising the root package
   end to end. References the root package locally, same as any consumer
   would via a remote SPM dependency.
-- **`Scripts/e2e.sh`** — automated end-to-end test suite driving real CLI
+- **`Scripts/verify.sh`** — automated end-to-end test suite driving real CLI
   processes and real Simulators (see below).
 
 ## Integrating into an app
+
+Add the package in Xcode using:
+
+```text
+https://github.com/Alex-Vaiman/SimNap.git
+```
+
+Select the `SimulatorNetworkCore` product and use version `1.0.1` or later.
+For a manifest-based project:
+
+```swift
+dependencies: [
+    .package(
+        url: "https://github.com/Alex-Vaiman/SimNap.git",
+        from: "1.0.1"
+    )
+]
+```
 
 One line, as early in launch as you can put it:
 
@@ -152,6 +200,10 @@ sudo and no shell configuration to edit.
 The bundled file is not called `simnap`: macOS filesystems are
 case-insensitive by default, so it would be the same file as the `SimNap` app
 executable beside it. The command name comes from the symlink.
+
+The installer will not replace a `simnap` it did not create. An absent path,
+or a symlink already pointing into a SimNap bundle, is written; anything else
+is left alone and reported, with `--cli-dir <dir>` to pick somewhere else.
 
 A checkout run and an installed copy exclude each other — the instance lock
 lives under `~/Library/Caches`, not in `TMPDIR`, which is launch-context
@@ -274,3 +326,9 @@ tap coordinates involved.
   original URL loading system remains fully responsible for it. While
   offline, the protocol claims new HTTP/HTTPS requests and immediately fails
   them with the configured `URLError`; requests admitted earlier keep running.
+
+## License
+
+SimNap is available under the [MIT License](LICENSE.md).
+
+Copyright © 2026 Alex Vaiman.

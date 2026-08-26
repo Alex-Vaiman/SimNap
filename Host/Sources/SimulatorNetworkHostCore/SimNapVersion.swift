@@ -9,5 +9,5 @@ import Foundation
 ///
 /// Bump this, then tag `app/<version>`.
 public enum SimNapVersion {
-    public static let current = "1.0.5"
+    public static let current = "1.0.6"
 }

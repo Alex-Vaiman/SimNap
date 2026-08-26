@@ -547,6 +547,14 @@ log "=== H. Application bundle ==="
 # CFBundleExecutable names a file that exists, the ad-hoc signature, and that
 # both bundled binaries run under an empty environment the way launchd starts
 # a Finder-launched app.
+# The installer must never replace an executable it does not own.
+"$ROOT/Scripts/build-app.sh" --self-test-cli-link >/tmp/simnap-verify-clilink.log 2>&1
+if [ $? -eq 0 ]; then
+  pass "installer refuses to overwrite a CLI path it does not own"
+else
+  fail "CLI link checks failed: $(grep FAIL /tmp/simnap-verify-clilink.log | tr '\n' '; ')"
+fi
+
 "$ROOT/Scripts/build-app.sh" --debug >/tmp/simnap-verify-bundle.log 2>&1
 BUNDLE_EXIT=$?
 if [ "$BUNDLE_EXIT" -eq 0 ]; then
