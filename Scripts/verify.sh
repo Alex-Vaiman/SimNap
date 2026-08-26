@@ -173,7 +173,7 @@ install_app "$PRIMARY_UDID"
 # instead would pass happily against a stale install that still answers `state`
 # but knows nothing of, say, `stop-start`.
 log "Checking the installed app supports every scenario this suite uses..."
-REQUIRED_SCENARIOS="state state-watch quick stop stop-start headers redirect post-online post-offline unintegrated network-framework delayed-watch"
+REQUIRED_SCENARIOS="state state-watch quick stop stop-start headers redirect post-online post-offline start-only shared-session unintegrated network-framework delayed-watch"
 CAPABILITIES=$(run_scenario "$PRIMARY_UDID" capabilities)
 if [ -z "$CAPABILITIES" ]; then
   abort "the installed app emitted no SIMNAP_RESULT for 'capabilities' — it is stale or crashed on launch"
@@ -304,8 +304,23 @@ assert_eq "second online-admitted request also survives" "success" "$(echo "$IN_
 assert_eq "second new request is blocked" "failure" "$(echo "$NEW_RESULT" | jq -r '.outcome')"
 assert_eq "new request gets configured notConnected error" "notConnectedToInternet" "$(echo "$NEW_RESULT" | jq -r '.error')"
 
+# start() on its own must gate an ordinarily-built session, with no SimNap
+# call anywhere near the networking layer, and stop() must hand Foundation
+# back so the very same construction reaches the network again.
+"$CLI" offline --device "$PRIMARY_UDID" --error timedOut >/dev/null
+R=$(run_scenario "$PRIMARY_UDID" start-only)
+assert_eq "start() alone gates a plain URLSession(configuration: .default)" "failure" "$(echo "$R" | jq -r '.afterStart')"
+assert_eq "that session fails with the configured error" "timedOut" "$(echo "$R" | jq -r '.afterStartError')"
+assert_eq "stop() restores Foundation for the same construction" "success" "$(echo "$R" | jq -r '.afterStop')"
+
 echo
 log "=== D. Documented boundary ==="
+
+# URLSession.shared is built internally and never goes through the intercepted
+# class methods, so it stays outside the boundary even after start().
+R=$(run_scenario "$PRIMARY_UDID" shared-session)
+assert_true "shared-session check runs while offline" "$(echo "$R" | jq -r '.stateAtStart | startswith("offline")')"
+assert_eq "URLSession.shared is NOT gated, even after start()" "success" "$(echo "$R" | jq -r '.outcome')"
 
 "$CLI" offline --device "$PRIMARY_UDID" --error timedOut >/dev/null
 R=$(run_scenario "$PRIMARY_UDID" unintegrated)

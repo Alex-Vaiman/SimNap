@@ -14,10 +14,12 @@ SimNap gates traffic at the URL Loading System, per Simulator UDID:
   requests started while offline fail with the selected simulated error.
 - **Already in flight:** requests admitted while online remain owned by their
   original session and are not cancelled by a later offline transition.
-- **Not controlled:** raw BSD sockets, `Network.framework`, third-party
-  stacks that bypass the URL Loading System, unintegrated `URLSession`
-  instances, and anything on a physical device (SimNap is a documented
-  pass-through there — no observers, no blocking).
+- **Not controlled:** `URLSession.shared` — it is built internally and never
+  goes through the intercepted class methods, so `start()` does not reach it;
+  raw BSD sockets; `Network.framework`; third-party stacks that bypass the
+  URL Loading System; configurations obtained before `start()`; and anything
+  on a physical device (SimNap is a documented pass-through there — no
+  observers, no swizzling, no blocking).
 
 This simulates network failure at the app's transport boundary, not at the
 Mac's firewall. It does not touch CoreSimulator routing, host network
@@ -48,17 +50,32 @@ macOS-only code.
 
 ## Integrating into an app
 
+One line, as early in launch as you can put it:
+
 ```swift
 import SimulatorNetworkCore
 
+SimulatorNetwork.start()
+```
+
+`start()` reconciles persisted Simulator state and, on the Simulator only,
+makes `URLSessionConfiguration.default` and `.ephemeral` hand out
+configurations that already carry the offline interceptor. Any `URLSession`
+or Alamofire `Session` your app builds from those afterwards is gated, with
+no further integration. `stop()` hands Foundation back.
+
+Order is the one thing that matters: a configuration obtained *before*
+`start()` was already copied and cannot be reached, so start early.
+
+For a session you want gated regardless of ordering, or one built from a
+configuration you constructed yourself, integrate it explicitly:
+
+```swift
 let configuration = SimulatorNetwork.configuration(from: .default)
 let session = URLSession(configuration: configuration)
 ```
 
-That's it — it starts the runtime, reconciles persisted Simulator state, and
-returns a configuration with the offline interceptor installed first. Optionally
-call `SimulatorNetwork.start()` earlier in app startup to bootstrap before
-your networking layer exists.
+This is the guaranteed path and is unaffected by `start()`.
 
 ```swift
 for await state in SimulatorNetwork.states {

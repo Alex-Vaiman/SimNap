@@ -23,7 +23,7 @@ enum ScenarioRunner {
     /// against a stale install.
     private static let supportedScenarios = [
         "capabilities", "state", "state-watch", "quick", "stop", "stop-start",
-        "post-online", "post-offline", "headers", "redirect", "unintegrated",
+        "post-online", "post-offline", "start-only", "shared-session", "headers", "redirect", "unintegrated",
         "network-framework", "delayed-watch"
     ]
 
@@ -125,6 +125,33 @@ enum ScenarioRunner {
                 "restartedOutcome": outcomeLabel(restartedOutcome),
                 "restartedError": errorLabel(restartedOutcome)
             ])
+
+        // The point of start(): a session built the ordinary way, with no
+        // SimNap call anywhere near it, must still be gated.
+        case "start-only":
+            SimulatorNetwork.start()
+            let plain = URLSession(configuration: .default)
+            let gated = await client.perform(plain, url: URL(string: "https://httpbin.org/get")!)
+
+            SimulatorNetwork.stop()
+            let afterStop = URLSession(configuration: .default)
+            let released = await client.perform(afterStop, url: URL(string: "https://httpbin.org/get")!)
+
+            emit([
+                "scenario": "start-only",
+                "afterStart": outcomeLabel(gated),
+                "afterStartError": errorLabel(gated),
+                "afterStop": outcomeLabel(released)
+            ])
+
+        // Reported, not asserted: URLSession.shared is built internally and may
+        // not go through the intercepted class methods at all.
+        case "shared-session":
+            SimulatorNetwork.start()
+            let outcome = await client.perform(URLSession.shared, url: URL(string: "https://httpbin.org/get")!)
+            emit(payload(scenario: "shared-session", outcome: outcome, extra: [
+                "stateAtStart": describe(SimulatorNetwork.state)
+            ]))
 
         case "headers":
             var request = URLRequest(url: URL(string: "https://httpbin.org/headers")!)

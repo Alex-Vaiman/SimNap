@@ -37,6 +37,12 @@ final class Runtime: @unchecked Sendable {
             installDarwinObserverOnQueue()
             reconcileOnQueue()
         }
+
+        // Outside the queue: the interception handed out below calls back into
+        // `configuration(from:)`, which needs this queue. Only the explicit
+        // `start()` installs it — `configuration(from:)` auto-starting the
+        // runtime must not silently switch the whole process over.
+        ConfigurationInterception.install()
     }
 
     func ensureStarted() {
@@ -55,6 +61,10 @@ final class Runtime: @unchecked Sendable {
     }
 
     func stop() {
+        // Before the state teardown, so no further gated configurations are
+        // handed out while stopping.
+        ConfigurationInterception.uninstall()
+
         queue.sync {
             guard started else { return }
 
