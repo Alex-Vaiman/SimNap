@@ -68,9 +68,9 @@ enum ScenarioRunner {
                 ]
             ))
 
-        // A POST with a body is the sharpest check that nothing touches online
-        // traffic: an interception layer that proxied requests would have to
-        // re-send the body itself, and `URLProtocol` loses body streams.
+        // A POST with a body is the sharpest check that online traffic is
+        // untouched. Anything that re-sent the request would have to carry the
+        // body across itself, and `URLProtocol` loses body streams.
         case "post-online":
             let marker = "simnap-body-marker-42"
             var request = URLRequest(url: URL(string: "https://httpbin.org/post")!)
@@ -144,10 +144,9 @@ enum ScenarioRunner {
                 "afterStop": outcomeLabel(released)
             ])
 
-        // What actually determines gating is when the *session* was built,
-        // not how early start() ran. A session created beforehand holds its own
-        // copied configuration; one created afterwards — an hour later or a
-        // millisecond later — is gated.
+        // start() has no ordering requirement: `protocolClasses` is consulted
+        // per request, so a session that already exists and has already been
+        // used is gated from its next request onwards.
         case "start-later":
             let url = URL(string: "https://httpbin.org/get")!
             // Built AND already used before start(), which is the real case:

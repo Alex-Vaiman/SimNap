@@ -272,9 +272,10 @@ Covers:
 - The cold-launch guarantee and both simulated error modes.
 - `stop()` leaving pass-through, and an explicit `start()` re-applying the
   persisted record.
-- Header, redirect, and **POST body** round-trips while online. The body check
-  is the one that fails loudest if anything ever proxies online traffic again:
-  a dropped body still returns HTTP 200, so status alone proves nothing.
+- Header, redirect, and **POST body** round-trips while online, asserting the
+  server echoes the body back. A request that lost its body still returns HTTP
+  200, so a status code alone would prove nothing about online traffic being
+  untouched.
 - The documented boundary — already-running requests, unintegrated
   `URLSession`, and raw `Network.framework` traffic staying unaffected.
 - Per-Simulator isolation.

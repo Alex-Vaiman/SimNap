@@ -318,8 +318,8 @@ R=$(run_scenario "$PRIMARY_UDID" redirect)
 assert_eq "redirect forwarding succeeds" "success" "$(echo "$R" | jq -r '.outcome')"
 assert_eq "redirect forwarding lands on final 200" "200" "$(echo "$R" | jq -r '.status')"
 
-# A POST body is the check that would have caught proxying online traffic:
-# a re-sending interception layer loses request bodies.
+# A POST body is the sharpest check that online traffic is untouched: anything
+# re-sending the request loses it, while the status code stays 200.
 R=$(run_scenario "$PRIMARY_UDID" post-online)
 assert_eq "POST while online succeeds" "success" "$(echo "$R" | jq -r '.outcome')"
 assert_eq "POST while online gets HTTP 200" "200" "$(echo "$R" | jq -r '.status')"
