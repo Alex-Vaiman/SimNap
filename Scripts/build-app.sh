@@ -10,7 +10,7 @@ BUILD_DIR="$ROOT/Release"
 APP="$BUILD_DIR/SimNap.app"
 CONFIGURATION="release"
 INSTALL_DIR=""
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -44,6 +44,12 @@ cp "$BIN_DIR/simulator-network-menubar" "$APP/Contents/MacOS/SimNap"
 # to can be put on PATH from a known location.
 cp "$BIN_DIR/simulator-network" "$APP/Contents/MacOS/simulator-network"
 
+# Committed rather than generated here, so building does not depend on
+# re-rendering it. Regenerate with: swift Scripts/make-icon.swift
+ICON_SOURCE="$ROOT/Resources/AppIcon.icns"
+[ -f "$ICON_SOURCE" ] || die "Resources/AppIcon.icns is missing"
+cp "$ICON_SOURCE" "$APP/Contents/Resources/AppIcon.icns"
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -54,6 +60,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleExecutable</key><string>SimNap</string>
     <key>CFBundleIdentifier</key><string>com.simnap.menubar</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleName</key><string>SimNap</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
@@ -87,6 +94,11 @@ plist_value() { /usr/libexec/PlistBuddy -c "Print :$1" "$APP/Contents/Info.plist
 # Without LSUIElement the app takes a Dock icon and a menu bar of its own,
 # which is wrong for a status-bar accessory.
 [ "$(plist_value LSUIElement)" = "true" ] || die "LSUIElement is not set"
+
+# Without a resolvable icon the app shows the generic placeholder in Finder
+# and the Dock, which looks like a broken install.
+[ "$(plist_value CFBundleIconFile)" = "AppIcon" ] || die "CFBundleIconFile is not set"
+[ -f "$APP/Contents/Resources/AppIcon.icns" ] || die "AppIcon.icns is not in the bundle"
 
 EXECUTABLE_NAME=$(plist_value CFBundleExecutable)
 [ -x "$APP/Contents/MacOS/$EXECUTABLE_NAME" ] \
