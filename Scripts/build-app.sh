@@ -10,7 +10,7 @@ BUILD_DIR="$ROOT/Release"
 APP="$BUILD_DIR/SimNap.app"
 CONFIGURATION="release"
 INSTALL_DIR=""
-VERSION="1.0"
+VERSION="1.0.0"
 
 while [ $# -gt 0 ]; do
   case "$1" in
