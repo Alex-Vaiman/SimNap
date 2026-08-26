@@ -149,17 +149,22 @@ enum ScenarioRunner {
         // copied configuration; one created afterwards — an hour later or a
         // millisecond later — is gated.
         case "start-later":
-            let sessionBuiltBefore = URLSession(configuration: .default)
-            SimulatorNetwork.start()
-            let sessionBuiltAfter = URLSession(configuration: .default)
+            let url = URL(string: "https://httpbin.org/get")!
+            // Built AND already used before start(), which is the real case:
+            // an app that has been running for a while with a live session.
+            let existingSession = URLSession(configuration: .default)
+            let warmup = await client.perform(existingSession, url: url)
 
-            let before = await client.perform(sessionBuiltBefore, url: URL(string: "https://httpbin.org/get")!)
-            let after = await client.perform(sessionBuiltAfter, url: URL(string: "https://httpbin.org/get")!)
+            SimulatorNetwork.start()
+
+            let existingAfterStart = await client.perform(existingSession, url: url)
+            let freshAfterStart = await client.perform(URLSession(configuration: .default), url: url)
             emit([
                 "scenario": "start-later",
-                "sessionBuiltBeforeStart": outcomeLabel(before),
-                "sessionBuiltAfterStart": outcomeLabel(after),
-                "afterError": errorLabel(after)
+                "existingSessionBeforeStart": outcomeLabel(warmup),
+                "existingSessionAfterStart": outcomeLabel(existingAfterStart),
+                "freshSessionAfterStart": outcomeLabel(freshAfterStart),
+                "existingAfterStartError": errorLabel(existingAfterStart)
             ])
 
         // Both SimNap and the host app swizzle the same protocolClasses

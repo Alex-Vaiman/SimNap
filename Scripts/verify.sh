@@ -328,11 +328,13 @@ assert_eq "start() alone gates a plain URLSession(configuration: .default)" "fai
 assert_eq "that session fails with the configured error" "timedOut" "$(echo "$R" | jq -r '.afterStartError')"
 assert_eq "stop() restores Foundation for the same construction" "success" "$(echo "$R" | jq -r '.afterStop')"
 
-# The protocolClasses getter is read when the session is constructed, so even
-# a configuration obtained before start() is reached.
+# protocolClasses is consulted per request, so start() reaches sessions that
+# already exist and have already been used — it does not have to run at launch.
 R=$(run_scenario "$PRIMARY_UDID" start-later)
-assert_eq "a session built from a pre-start() configuration is gated" "failure" "$(echo "$R" | jq -r '.sessionBuiltBeforeStart')"
-assert_eq "a session built after start() is gated" "failure" "$(echo "$R" | jq -r '.sessionBuiltAfterStart')"
+assert_eq "an existing session is untouched before start()" "success" "$(echo "$R" | jq -r '.existingSessionBeforeStart')"
+assert_eq "the same already-used session is gated after start()" "failure" "$(echo "$R" | jq -r '.existingSessionAfterStart')"
+assert_eq "it fails with the configured error" "timedOut" "$(echo "$R" | jq -r '.existingAfterStartError')"
+assert_eq "a session created after start() is gated" "failure" "$(echo "$R" | jq -r '.freshSessionAfterStart')"
 
 # An application that swizzles the same getter must keep working. While online
 # SimNap declines every request, so the app's own protocol has to handle its

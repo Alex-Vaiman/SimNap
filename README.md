@@ -69,13 +69,15 @@ configurations that already carry the offline interceptor. Any `URLSession`
 or Alamofire `Session` your app builds from those afterwards is gated, with
 no further integration. `stop()` hands Foundation back.
 
-`start()` can be called at any point — an hour into the process is fine. A
-`URLSession` reads `protocolClasses` off its configuration when it is
-constructed, and SimNap exchanges that getter, so any session built after
-`start()` is gated even if its configuration was created long before. A
-session that already exists keeps the copy it was built with.
+`start()` can be called at any point — an hour into the process is fine, and
+it does not have to be near launch. `URLSession` consults `protocolClasses`
+per request, and SimNap exchanges that getter, so **every request issued
+after `start()` is gated** no matter when its session or configuration was
+created. A session that has been alive and in use for an hour starts failing
+on its next request.
 
-This reaches `URLSession.shared` as well.
+This reaches `URLSession.shared` as well. Requests already in flight when
+`start()` runs are left alone, the same as on an offline transition.
 
 For a session you want gated regardless of ordering, or one built from a
 configuration you constructed yourself, integrate it explicitly:
