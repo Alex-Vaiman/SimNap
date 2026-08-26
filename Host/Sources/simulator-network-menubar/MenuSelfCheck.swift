@@ -55,9 +55,20 @@ enum MenuSelfCheck {
             checked += 1
             let itemPath = "\(path) > \(item.isSeparatorItem ? "<separator>" : item.title)"
 
-            // Items that own a submenu are excluded: AppKit assigns them
-            // `submenuAction:` against the parent menu and dispatches it
-            // internally, so `responds(to:)` is not meaningful there.
+            // AppKit owns submenu parents: it assigns them `submenuAction:`
+            // against the parent menu and dispatches it internally, so
+            // `responds(to:)` says nothing useful. The invariant that does
+            // hold is that we must not have retargeted them — pointing one at
+            // the delegate is exactly the defect a blanket target assignment
+            // reintroduces, and exempting them outright would hide it.
+            if item.submenu != nil {
+                if let target = item.target, !(target is NSMenu) {
+                    failures.append(
+                        "\(itemPath): submenu parent was retargeted at \(type(of: target)); leave it to AppKit"
+                    )
+                }
+            }
+
             if let action = item.action, item.submenu == nil {
                 guard let target = item.target else {
                     // A nil target routes through the responder chain, which a

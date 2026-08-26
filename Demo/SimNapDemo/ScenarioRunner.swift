@@ -17,10 +17,23 @@ enum ScenarioRunner {
         }
     }
 
+    /// Every scenario this binary implements. Reported by the `capabilities`
+    /// scenario so a harness can verify the *installed* app supports what it is
+    /// about to run — checking the local source instead would happily pass
+    /// against a stale install.
+    private static let supportedScenarios = [
+        "capabilities", "state", "state-watch", "quick", "stop", "stop-start",
+        "post-online", "post-offline", "headers", "redirect", "unintegrated",
+        "network-framework", "delayed-watch"
+    ]
+
     private static func run(_ scenario: String) async {
         let client = RequestClient()
 
         switch scenario {
+        case "capabilities":
+            emit(["scenario": "capabilities", "scenarios": supportedScenarios])
+
         case "state":
             emit(["scenario": "state", "state": describe(SimulatorNetwork.state)])
 

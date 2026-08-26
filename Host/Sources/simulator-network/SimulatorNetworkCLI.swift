@@ -20,14 +20,23 @@ enum CLIError: Error, CustomStringConvertible {
 }
 
 enum CLIOutput {
-    static func printStatus(device: String, status: PersistedSimulatorNetworkState, json: Bool) {
+    /// `changed` is reported only for mutations. It distinguishes a command
+    /// that wrote this record from one that found the state already applied,
+    /// which matters when several commands run concurrently.
+    static func printStatus(
+        device: String,
+        status: PersistedSimulatorNetworkState,
+        json: Bool,
+        changed: Bool? = nil
+    ) {
         if json {
-            let payload: [String: Any] = [
+            var payload: [String: Any] = [
                 "device": device,
                 "state": status.mode.rawValue,
                 "error": status.offlineError.rawValue,
                 "generation": status.generation
             ]
+            if let changed { payload["changed"] = changed }
             if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]),
                let string = String(data: data, encoding: .utf8) {
                 print(string)
@@ -60,8 +69,8 @@ struct Offline: ParsableCommand {
             throw CLIError.message("Unknown --error '\(errorMode)'. Use timedOut or notConnectedToInternet.")
         }
         let host = SimulatorNetworkHostCore()
-        try host.setOffline(deviceUDID: device, error: offlineError)
-        CLIOutput.printStatus(device: device, status: try host.status(for: device), json: json)
+        let outcome = try host.setOffline(deviceUDID: device, error: offlineError)
+        CLIOutput.printStatus(device: device, status: outcome.record, json: json, changed: outcome.changed)
     }
 }
 
@@ -76,8 +85,8 @@ struct Online: ParsableCommand {
 
     func run() throws {
         let host = SimulatorNetworkHostCore()
-        try host.setOnline(deviceUDID: device)
-        CLIOutput.printStatus(device: device, status: try host.status(for: device), json: json)
+        let outcome = try host.setOnline(deviceUDID: device)
+        CLIOutput.printStatus(device: device, status: outcome.record, json: json, changed: outcome.changed)
     }
 }
 

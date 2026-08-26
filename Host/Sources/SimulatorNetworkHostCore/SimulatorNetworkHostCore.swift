@@ -27,12 +27,30 @@ public struct SimulatorDeviceStatus: Sendable, Equatable {
     }
 }
 
+/// What a mutation actually did, captured inside the writer lock.
+///
+/// Reporting a fresh `status` read after the lock is released would describe
+/// whatever the record happens to hold by then, which under concurrent
+/// commands may be another process's write rather than this one's.
+public struct MutationOutcome: Sendable, Equatable {
+    /// The record this command left in place: the one it wrote, or the
+    /// unchanged record it found when the requested state already applied.
+    public let record: PersistedSimulatorNetworkState
+    /// False when the requested state was already applied and nothing was written.
+    public let changed: Bool
+
+    public init(record: PersistedSimulatorNetworkState, changed: Bool) {
+        self.record = record
+        self.changed = changed
+    }
+}
+
 public protocol SimulatorNetworkHostControlling {
     func bootedDevices() throws -> [SimulatorDevice]
     func bootedDeviceStatuses() throws -> [SimulatorDeviceStatus]
     func status(for udid: String) throws -> PersistedSimulatorNetworkState
-    func setOffline(deviceUDID: String, error: OfflineError) throws
-    func setOnline(deviceUDID: String) throws
+    @discardableResult func setOffline(deviceUDID: String, error: OfflineError) throws -> MutationOutcome
+    @discardableResult func setOnline(deviceUDID: String) throws -> MutationOutcome
 }
 
 /// Single source of state-mutation logic. The CLI and menu bar app both call
@@ -67,7 +85,8 @@ public final class SimulatorNetworkHostCore: SimulatorNetworkHostControlling {
         return try PersistenceWriter.readRecord(udid: udid) ?? .initial
     }
 
-    public func setOffline(deviceUDID: String, error: OfflineError) throws {
+    @discardableResult
+    public func setOffline(deviceUDID: String, error: OfflineError) throws -> MutationOutcome {
         try mutate(deviceUDID: deviceUDID) { previous in
             guard previous.epoch == nil || previous.mode != .offline || previous.offlineError != error else {
                 return previous
@@ -81,7 +100,8 @@ public final class SimulatorNetworkHostCore: SimulatorNetworkHostControlling {
         }
     }
 
-    public func setOnline(deviceUDID: String) throws {
+    @discardableResult
+    public func setOnline(deviceUDID: String) throws -> MutationOutcome {
         try mutate(deviceUDID: deviceUDID) { previous in
             guard previous.epoch == nil || previous.mode != .online else { return previous }
             return PersistedSimulatorNetworkState(
@@ -93,19 +113,25 @@ public final class SimulatorNetworkHostCore: SimulatorNetworkHostControlling {
         }
     }
 
-    private func mutate(deviceUDID: String, transform: (PersistedSimulatorNetworkState) -> PersistedSimulatorNetworkState) throws {
+    private func mutate(
+        deviceUDID: String,
+        transform: (PersistedSimulatorNetworkState) -> PersistedSimulatorNetworkState
+    ) throws -> MutationOutcome {
         try validateBooted(deviceUDID)
 
         let lock = try SimulatorLock(udid: deviceUDID)
-        try lock.withLock {
+        let outcome = try lock.withLock { () -> MutationOutcome in
             let previous = try previousRecordForMutation(deviceUDID: deviceUDID)
             let next = transform(previous)
-            if next != previous {
-                try PersistenceWriter.writeRecord(udid: deviceUDID, record: next)
+            guard next != previous else {
+                return MutationOutcome(record: previous, changed: false)
             }
+            try PersistenceWriter.writeRecord(udid: deviceUDID, record: next)
+            return MutationOutcome(record: next, changed: true)
         }
 
         try notifyWithRetry(deviceUDID: deviceUDID)
+        return outcome
     }
 
     private func previousRecordForMutation(deviceUDID: String) throws -> PersistedSimulatorNetworkState {

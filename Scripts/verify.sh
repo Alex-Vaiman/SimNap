@@ -75,15 +75,19 @@ fi
 log "Primary Simulator: $PRIMARY_UDID"
 
 log "Building demo app..."
+# A fixed derived-data path: locating the product by globbing DerivedData picks
+# an arbitrary directory when more than one exists, which can install a build
+# from an unrelated checkout.
+DERIVED_DATA="$ROOT/.verify-deriveddata"
 if ! xcodebuild -project "$DEMO_PROJECT" -scheme SimNapDemo \
-    -destination "platform=iOS Simulator,id=$PRIMARY_UDID" build \
+    -destination "platform=iOS Simulator,id=$PRIMARY_UDID" \
+    -derivedDataPath "$DERIVED_DATA" build \
     >/tmp/simnap-verify-demo-build.log 2>&1; then
   cat /tmp/simnap-verify-demo-build.log
   log "demo app build failed — aborting"
   exit 1
 fi
-DERIVED_DATA_APP=$(find ~/Library/Developer/Xcode/DerivedData -maxdepth 1 -iname "SimNapDemo-*" -print -quit)
-APP_PATH="$DERIVED_DATA_APP/Build/Products/Debug-iphonesimulator/SimNapDemo.app"
+APP_PATH="$DERIVED_DATA/Build/Products/Debug-iphonesimulator/SimNapDemo.app"
 if [ ! -d "$APP_PATH" ]; then
   log "Could not locate built .app at $APP_PATH — aborting"
   exit 1
@@ -164,18 +168,23 @@ run_state_watch_after_record_reset() {
 
 install_app "$PRIMARY_UDID"
 
-# The installed binary — not the one just built — is what every scenario runs.
-# A stale install silently lacks newer scenarios, which would otherwise surface
-# as a wall of unrelated assertion failures. Verify the vocabulary up front.
+# The installed binary — not the one just built — is what every scenario runs,
+# so the vocabulary is read back out of that binary. Checking the local source
+# instead would pass happily against a stale install that still answers `state`
+# but knows nothing of, say, `stop-start`.
 log "Checking the installed app supports every scenario this suite uses..."
 REQUIRED_SCENARIOS="state state-watch quick stop stop-start headers redirect post-online post-offline unintegrated network-framework delayed-watch"
-PROBE=$(run_scenario "$PRIMARY_UDID" state)
-if [ -z "$PROBE" ]; then
-  abort "the installed app emitted no SIMNAP_RESULT — it may be stale, or crashed on launch"
+CAPABILITIES=$(run_scenario "$PRIMARY_UDID" capabilities)
+if [ -z "$CAPABILITIES" ]; then
+  abort "the installed app emitted no SIMNAP_RESULT for 'capabilities' — it is stale or crashed on launch"
 fi
 for scenario in $REQUIRED_SCENARIOS; do
+  if ! echo "$CAPABILITIES" | jq -e --arg s "$scenario" 'any(.scenarios[]; . == $s)' >/dev/null 2>&1; then
+    abort "the installed app does not support scenario '$scenario' — rebuild and reinstall the demo app"
+  fi
+  # Secondary guard: catches the reported list drifting from the switch.
   if ! grep -q "case \"$scenario\":" "$ROOT/Demo/SimNapDemo/ScenarioRunner.swift"; then
-    abort "ScenarioRunner.swift has no scenario '$scenario' that this suite requires"
+    abort "ScenarioRunner reports '$scenario' but has no case for it"
   fi
 done
 
@@ -333,9 +342,12 @@ assert_eq "secondary Simulator independently online" "online" "$(echo "$R2" | jq
 echo
 log "=== F. Writer lock under concurrent commands ==="
 
-# A lost update looks like two commands both reading generation G and both
-# writing G+1 — observable as one generation reported with two different
-# records. Under a correct lock each generation maps to exactly one record.
+# Each command reports the record it wrote inside the lock, plus whether it
+# wrote at all. Under a correct lock every writing command must own a distinct
+# generation, and the record must advance by exactly one per writing command.
+# Asserting against a post-hoc `status` read instead would be worthless: with
+# the lock disabled entirely, eight commands lost seven updates and every such
+# assertion still passed.
 "$CLI" online --device "$PRIMARY_UDID" >/dev/null
 BURST_GENERATION_BEFORE=$("$CLI" status --device "$PRIMARY_UDID" --json | jq -r '.generation')
 BURST_DIR=$(mktemp -d)
@@ -349,22 +361,23 @@ for i in $(seq 1 "$BURST_N"); do
 done
 wait
 
-BURST_REPORTED=$(cat "$BURST_DIR"/*.json 2>/dev/null | jq -s -r 'map(select(.generation != null)) | length' 2>/dev/null || echo 0)
+BURST_JSON=$(cat "$BURST_DIR"/*.json 2>/dev/null | jq -s -c 'map(select(.generation != null))' 2>/dev/null || echo '[]')
+BURST_REPORTED=$(echo "$BURST_JSON" | jq -r 'length')
 assert_eq "every concurrent command reported a result" "$BURST_N" "$BURST_REPORTED"
 
-BURST_CONFLICTS=$(cat "$BURST_DIR"/*.json 2>/dev/null | jq -s -r '
-  map(select(.generation != null))
-  | group_by(.generation)
-  | map(select((map(.state + ":" + (.error // "")) | unique | length) > 1))
-  | length' 2>/dev/null || echo -1)
-assert_eq "no generation was assigned to two different records" "0" "$BURST_CONFLICTS"
+# The core assertion: a lost update means two writers computed the same
+# generation, so distinct writer generations must equal the number of writers.
+BURST_WRITERS=$(echo "$BURST_JSON" | jq -r 'map(select(.changed == true)) | length')
+BURST_DISTINCT=$(echo "$BURST_JSON" | jq -r 'map(select(.changed == true)) | map(.generation) | unique | length')
+assert_eq "no two concurrent writers were assigned the same generation" "$BURST_WRITERS" "$BURST_DISTINCT"
+assert_true "at least one concurrent command actually wrote" \
+  "$([ "$BURST_WRITERS" -gt 0 ] && echo true || echo false)"
 
 BURST_GENERATION_AFTER=$("$CLI" status --device "$PRIMARY_UDID" --json 2>/dev/null | jq -r '.generation')
 assert_true "record is still readable after the concurrent burst" "$([ -n "$BURST_GENERATION_AFTER" ] && echo true || echo false)"
-# Each command either changes the record once or is idempotent, so the burst can
-# advance the generation by at most one per command.
-assert_lt "concurrent burst advanced generation by at most one per command" \
-  "$((BURST_GENERATION_AFTER - BURST_GENERATION_BEFORE))" "$((BURST_N + 1))"
+# Exact, not a bound: every writing command must have advanced the record once.
+assert_eq "generation advanced by exactly one per writing command" \
+  "$BURST_WRITERS" "$((BURST_GENERATION_AFTER - BURST_GENERATION_BEFORE))"
 rm -rf "$BURST_DIR"
 
 echo

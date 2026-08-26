@@ -85,6 +85,11 @@ never guesses "the first booted Simulator." State is per-Simulator: two
 booted Simulators can hold different states at once, and every cooperating
 app inside one Simulator shares that Simulator's state.
 
+`offline` and `online` report the record they wrote, captured inside the
+writer lock, rather than re-reading afterwards — a re-read can return another
+command's write. Their `--json` output carries a `changed` field, false when
+the requested state was already applied and nothing was written.
+
 ## Menu bar app
 
 ```bash
@@ -140,8 +145,11 @@ Covers:
 - The documented boundary — already-running requests, unintegrated
   `URLSession`, and raw `Network.framework` traffic staying unaffected.
 - Per-Simulator isolation.
-- The per-Simulator writer lock under a concurrent command burst: no
-  generation may map to two different records.
+- The per-Simulator writer lock under a concurrent command burst. Each
+  command reports the record it wrote inside the lock, so the assertions are
+  exact: every writing command owns a distinct generation, and the record
+  advances by exactly one per writing command. Verified to fail with the lock
+  disabled, where eight commands lost seven updates.
 - A headless menu self-check (`simulator-network-menubar --self-check`)
   asserting every actionable menu item has a target that responds to its
   action, that automatic enabling stays off, and that repopulating the menu
