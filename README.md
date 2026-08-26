@@ -10,8 +10,10 @@ including apps that were killed while offline and just cold-launched.
 SimNap gates traffic at the URL Loading System, per Simulator UDID:
 
 - **Guaranteed:** `URLSession` (and Alamofire `Session`) instances built from
-  a `SimulatorNetwork`-integrated `URLSessionConfiguration`, including
-  requests already in flight and new requests started while offline.
+  a `SimulatorNetwork`-integrated `URLSessionConfiguration`. New HTTP/HTTPS
+  requests started while offline fail with the selected simulated error.
+- **Already in flight:** requests admitted while online remain owned by their
+  original session and are not cancelled by a later offline transition.
 - **Not controlled:** raw BSD sockets, `Network.framework`, third-party
   stacks that bypass the URL Loading System, unintegrated `URLSession`
   instances, and anything on a physical device (SimNap is a documented
@@ -29,7 +31,7 @@ macOS-only code.
 
 - **`Package.swift`** (root) — `SimulatorNetworkCore`, the iOS-side library
   (Foundation only). Owns runtime lifecycle, state reconciliation, the
-  proxy `URLProtocol`, and the active-request registry. This is the product
+  offline-only `URLProtocol` interceptor. This is the product
   you add to an app: `.package(url: ".../SimNap", ...)`.
 - **`Host/Package.swift`** — macOS-only tooling, built and run separately
   (`cd Host && swift build`). Depends on the root package locally for the
@@ -54,7 +56,7 @@ let session = URLSession(configuration: configuration)
 ```
 
 That's it — it starts the runtime, reconciles persisted Simulator state, and
-returns a configuration with the proxy protocol installed first. Optionally
+returns a configuration with the offline interceptor installed first. Optionally
 call `SimulatorNetwork.start()` earlier in app startup to bootstrap before
 your networking layer exists.
 
@@ -98,9 +100,9 @@ are fully functional without it.
 ## Demo app
 
 `Demo/SimNapDemo.xcodeproj` is a one-screen iOS app: a live state badge, a
-quick request button, and a 6-second delayed request button for watching
-in-flight cancellation happen when you flip the Simulator offline mid-request
-from the CLI or menu bar. It references `SimulatorNetworkCore` as a local
+quick request button, and a 6-second delayed request button for comparing a
+request admitted online with new requests started after an offline transition.
+It references `SimulatorNetworkCore` as a local
 Swift package (`../`).
 
 ```bash
@@ -118,8 +120,8 @@ Builds the root package, the Host package, and the demo app for real, then
 drives real `simctl`/CLI processes against a real booted Simulator — no
 mocks. It boots a second, disposable Simulator for the isolation check and
 deletes it afterward. Covers: CLI behavior and generation ordering, the cold
-launch guarantee, request/header/redirect forwarding, exactly-once in-flight
-cancellation, the documented boundary (unintegrated `URLSession` and raw
+launch guarantee, both simulated error modes, the documented boundary
+(already-running requests, unintegrated `URLSession`, and raw
 `Network.framework` traffic staying unaffected), per-Simulator isolation,
 and a menu bar crash smoke test. Requires exactly one Simulator already
 booted and `jq` installed.

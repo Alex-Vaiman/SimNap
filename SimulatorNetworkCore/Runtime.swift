@@ -1,20 +1,20 @@
 import Foundation
 
-/// Owns simulated network state, transport gating, and reconciliation against
-/// the persisted per-Simulator record. Not an actor: `URLProtocol` callbacks
-/// are synchronous, so the hot path needs lock-protected state, not await.
+/// Owns simulated network state and reconciliation against the persisted
+/// per-Simulator record. A serial queue keeps lifecycle, notifications, state,
+/// and stream delivery in one ordering domain while still allowing synchronous
+/// reads from `URLProtocol.canInit`.
 final class Runtime: @unchecked Sendable {
     static let shared = Runtime()
 
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "com.simnap.simulator-network.runtime")
     private var started = false
     private var enabled = false
     private var lastAppliedGeneration: UInt64 = 0
     private var currentState: SimulatorNetworkState = .online
+    private var configuredOfflineError: OfflineError = .timedOut
     private var darwinObserverInstalled = false
     private var continuations: [UUID: AsyncStream<SimulatorNetworkState>.Continuation] = [:]
-
-    private let registry = ActiveRequestRegistry()
 
     private init() {}
 
@@ -31,38 +31,38 @@ final class Runtime: @unchecked Sendable {
     }
 
     func ensureStarted() {
-        lock.lock()
-        if started {
-            lock.unlock()
-            return
+        queue.sync {
+            guard !started else { return }
+            started = true
+            enabled = true
+
+            guard isSimulator else { return }
+
+            // Observe first, then read. An update racing with startup is either
+            // included in this read or queued for reconciliation afterward.
+            installDarwinObserverOnQueue()
+            reconcileOnQueue()
         }
-        started = true
-        enabled = true
-        lock.unlock()
-
-        guard isSimulator else { return }
-
-        reconcile()
-        installDarwinObserverIfNeeded()
     }
 
     func stop() {
-        lock.lock()
-        enabled = false
-        lock.unlock()
+        queue.sync {
+            guard started else { return }
 
-        removeDarwinObserverIfNeeded()
+            enabled = false
+            started = false
+            lastAppliedGeneration = 0
+            removeDarwinObserverOnQueue()
 
-        lock.lock()
-        currentState = .online
-        lock.unlock()
-        broadcast(.online)
+            guard currentState != .online else { return }
+            currentState = .online
+            broadcastOnQueue(.online)
+        }
     }
 
     var state: SimulatorNetworkState {
         ensureStarted()
-        lock.lock(); defer { lock.unlock() }
-        return currentState
+        return queue.sync { currentState }
     }
 
     var isOffline: Bool {
@@ -70,49 +70,43 @@ final class Runtime: @unchecked Sendable {
         return false
     }
 
-    /// True when new requests should be allowed to reach real transport.
-    var isGateOpen: Bool {
-        lock.lock(); defer { lock.unlock() }
-        guard enabled, isSimulator else { return true }
-        if case .offline = currentState { return false }
-        return true
+    var offlineErrorForInterception: OfflineError? {
+        ensureStarted()
+        return queue.sync {
+            guard enabled, isSimulator, case .offline(let error) = currentState else {
+                return nil
+            }
+            return error
+        }
     }
 
-    var offlineErrorForGate: OfflineError {
-        lock.lock(); defer { lock.unlock() }
-        if case .offline(let error) = currentState { return error }
-        return .timedOut
+    var offlineErrorForClaimedRequest: OfflineError {
+        ensureStarted()
+        return queue.sync { configuredOfflineError }
     }
 
     func states() -> AsyncStream<SimulatorNetworkState> {
         ensureStarted()
-        return AsyncStream { continuation in
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
             let id = UUID()
-            lock.lock()
-            continuations[id] = continuation
-            let snapshot = currentState
-            lock.unlock()
-
-            continuation.yield(snapshot)
             continuation.onTermination = { [weak self] _ in
-                guard let self else { return }
-                self.lock.lock()
-                self.continuations.removeValue(forKey: id)
-                self.lock.unlock()
+                self?.queue.async { [weak self] in
+                    self?.continuations.removeValue(forKey: id)
+                }
+            }
+
+            queue.sync {
+                continuations[id] = continuation
+                continuation.yield(currentState)
             }
         }
     }
 
-    func register(_ op: SimulatorURLProtocol) { registry.register(op) }
-    func unregister(_ op: SimulatorURLProtocol) { registry.unregister(op) }
-
     // MARK: - Darwin wake-up
 
-    private func installDarwinObserverIfNeeded() {
-        lock.lock()
-        if darwinObserverInstalled { lock.unlock(); return }
+    private func installDarwinObserverOnQueue() {
+        guard !darwinObserverInstalled else { return }
         darwinObserverInstalled = true
-        lock.unlock()
 
         let center = CFNotificationCenterGetDarwinNotifyCenter()
         let observer = Unmanaged.passUnretained(self).toOpaque()
@@ -121,7 +115,10 @@ final class Runtime: @unchecked Sendable {
             observer,
             { _, observer, _, _, _ in
                 guard let observer else { return }
-                Unmanaged<Runtime>.fromOpaque(observer).takeUnretainedValue().reconcile()
+                Unmanaged<Runtime>
+                    .fromOpaque(observer)
+                    .takeUnretainedValue()
+                    .scheduleReconciliation()
             },
             SimulatorNetworkPersistenceKey.darwinNotificationName as CFString,
             nil,
@@ -129,11 +126,9 @@ final class Runtime: @unchecked Sendable {
         )
     }
 
-    private func removeDarwinObserverIfNeeded() {
-        lock.lock()
-        guard darwinObserverInstalled else { lock.unlock(); return }
+    private func removeDarwinObserverOnQueue() {
+        guard darwinObserverInstalled else { return }
         darwinObserverInstalled = false
-        lock.unlock()
 
         let center = CFNotificationCenterGetDarwinNotifyCenter()
         let observer = Unmanaged.passUnretained(self).toOpaque()
@@ -147,52 +142,34 @@ final class Runtime: @unchecked Sendable {
 
     // MARK: - Reconciliation
 
+    private func scheduleReconciliation() {
+        queue.async { [weak self] in
+            self?.reconcileOnQueue()
+        }
+    }
+
     /// Persisted state is authoritative; a Darwin notification is only a wake-up.
     /// A missed, duplicated, or reordered notification is harmless because every
     /// call re-reads the record and only ever applies a newer-or-equal generation.
-    private func reconcile() {
-        lock.lock()
-        let isEnabled = enabled
-        lock.unlock()
-        guard isEnabled else { return }
-
+    private func reconcileOnQueue() {
+        guard enabled else { return }
         guard let record = PersistenceStore.read() else { return }
-
-        lock.lock()
-        guard record.generation >= lastAppliedGeneration else {
-            lock.unlock()
-            return
-        }
-        lastAppliedGeneration = record.generation
+        guard record.generation >= lastAppliedGeneration else { return }
 
         let newState: SimulatorNetworkState = record.mode == .offline
             ? .offline(record.offlineError)
             : .online
-        let enteringOffline = newState != currentState && isOfflineState(newState)
+
+        lastAppliedGeneration = record.generation
+        configuredOfflineError = record.offlineError
+        guard newState != currentState else { return }
         currentState = newState
-        lock.unlock()
+        broadcastOnQueue(newState)
+    }
 
-        // Gate is flipped above, before any in-flight operation is cancelled,
-        // so nothing can slip past the transition into the online path.
-        if enteringOffline {
-            let snapshot = registry.snapshotAndClear()
-            for operation in snapshot {
-                operation.failDueToSimulatedOffline(record.offlineError)
-            }
+    private func broadcastOnQueue(_ state: SimulatorNetworkState) {
+        for continuation in continuations.values {
+            continuation.yield(state)
         }
-
-        broadcast(newState)
-    }
-
-    private func isOfflineState(_ state: SimulatorNetworkState) -> Bool {
-        if case .offline = state { return true }
-        return false
-    }
-
-    private func broadcast(_ state: SimulatorNetworkState) {
-        lock.lock()
-        let targets = Array(continuations.values)
-        lock.unlock()
-        for continuation in targets { continuation.yield(state) }
     }
 }

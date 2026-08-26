@@ -15,7 +15,7 @@ public enum SimulatorNetwork {
         Runtime.shared.stop()
     }
 
-    /// Returns a copy of `base` with the package's proxy protocol installed
+    /// Returns a copy of `base` with the package's offline interceptor installed
     /// first, after synchronously starting the runtime and reconciling
     /// persisted state. Sufficient on its own for normal integration.
     public static func configuration(from base: URLSessionConfiguration = .default) -> URLSessionConfiguration {
