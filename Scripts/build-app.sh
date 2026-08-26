@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Assembles SimNap.app — a normal macOS application bundle for the menu bar
-# app — and validates it. Building never writes outside the repo; pass
-# --install to copy the result into /Applications.
+# app — and validates it. The product lands in Release/ inside the repo
+# (git-ignored); pass --install to also copy it into /Applications.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST_DIR="$ROOT/Host"
-BUILD_DIR="$ROOT/.build-app"
+BUILD_DIR="$ROOT/Release"
 APP="$BUILD_DIR/SimNap.app"
 CONFIGURATION="release"
 INSTALL_DIR=""

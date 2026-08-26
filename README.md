@@ -108,7 +108,7 @@ Or install it as a normal macOS application:
 That assembles `SimNap.app` (a `LSUIElement` accessory — status bar only, no
 Dock icon), ad-hoc signs it, validates the bundle, and copies it to
 `/Applications`, after which it launches from Spotlight like any other app.
-Without `--install` it only builds into `.build-app/`. The CLI is bundled
+Without `--install` it only builds into `Release/` (git-ignored). The CLI is bundled
 inside at `Contents/MacOS/simulator-network`; the script prints the `ln -s`
 to put it on your `PATH`.
 
