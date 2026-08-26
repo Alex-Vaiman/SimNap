@@ -1,4 +1,5 @@
 import Foundation
+import SimulatorNetworkHostCore
 
 /// Prevents a second copy of the menu bar app from adding a duplicate status
 /// item. Two instances are not a correctness problem — mutations are still
@@ -13,9 +14,9 @@ enum SingleInstanceGuard {
     private nonisolated(unsafe) static var heldDescriptor: Int32 = -1
 
     static func acquire() -> Bool {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("com.simnap.simulator-network", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // A launch-context-independent path, so an installed .app and a
+        // `swift run` from a terminal still exclude each other.
+        guard let directory = try? SimNapSupportDirectory.locks() else { return true }
         let path = directory.appendingPathComponent("menubar.lock").path
 
         let descriptor = open(path, O_CREAT | O_RDWR, 0o600)

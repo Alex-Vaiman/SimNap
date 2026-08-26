@@ -92,10 +92,29 @@ the requested state was already applied and nothing was written.
 
 ## Menu bar app
 
+Run it from a checkout:
+
 ```bash
 cd Host
 swift run simulator-network-menubar
 ```
+
+Or install it as a normal macOS application:
+
+```bash
+./Scripts/build-app.sh --install
+```
+
+That assembles `SimNap.app` (a `LSUIElement` accessory — status bar only, no
+Dock icon), ad-hoc signs it, validates the bundle, and copies it to
+`/Applications`, after which it launches from Spotlight like any other app.
+Without `--install` it only builds into `.build-app/`. The CLI is bundled
+inside at `Contents/MacOS/simulator-network`; the script prints the `ln -s`
+to put it on your `PATH`.
+
+A checkout run and an installed copy exclude each other — the instance lock
+lives under `~/Library/Caches`, not in `TMPDIR`, which is launch-context
+dependent.
 
 Convenience UI over the same `SimulatorNetworkHostCore` the CLI uses — lists
 booted Simulators, lets you toggle each online/offline, and copies the
@@ -168,6 +187,11 @@ Covers:
 - The menu bar single-instance lock: a second launch is refused, the
   self-check still runs alongside a live instance, and the lock is released
   when the app exits.
+- The application bundle: `Info.plist` keys including `LSUIElement`,
+  `CFBundleExecutable` naming a file that exists, the ad-hoc signature, and
+  both bundled binaries running under an empty environment the way launchd
+  starts a Finder-launched app. Plus that the lock directory is outside
+  `TMPDIR`, so every launch context shares one lock.
 
 The demo app's `ScenarioRunner` (`Demo/SimNapDemo/ScenarioRunner.swift`) is
 what makes this possible headlessly: set `SIMNAP_SCENARIO` in its

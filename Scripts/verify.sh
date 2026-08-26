@@ -429,6 +429,31 @@ fi
 kill "$MENUBAR_PID_2" 2>/dev/null || true
 
 echo
+log "=== H. Application bundle ==="
+
+# build-app.sh validates what it produced: Info.plist keys (including
+# LSUIElement, without which a status-bar app takes a Dock icon), that
+# CFBundleExecutable names a file that exists, the ad-hoc signature, and that
+# both bundled binaries run under an empty environment the way launchd starts
+# a Finder-launched app.
+"$ROOT/Scripts/build-app.sh" --debug >/tmp/simnap-verify-bundle.log 2>&1
+BUNDLE_EXIT=$?
+if [ "$BUNDLE_EXIT" -eq 0 ]; then
+  pass "app bundle assembles and passes its own validation"
+else
+  fail "app bundle build/validation failed: $(tail -3 /tmp/simnap-verify-bundle.log | tr '\n' ' ')"
+fi
+
+# The lock backing single-instance and per-Simulator serialization must not
+# depend on TMPDIR, which differs by launch context.
+LOCKS_DIR="$HOME/Library/Caches/com.simnap.simulator-network/locks"
+ALT_TMPDIR=$(mktemp -d)
+TMPDIR="$ALT_TMPDIR" "$CLI" online --device "$PRIMARY_UDID" >/dev/null 2>&1
+assert_true "locks live outside TMPDIR so every launch context shares them" \
+  "$([ -d "$LOCKS_DIR" ] && [ -z "$(ls -A "$ALT_TMPDIR" 2>/dev/null)" ] && echo true || echo false)"
+rm -rf "$ALT_TMPDIR"
+
+echo
 log "=== Cleanup ==="
 xcrun simctl shutdown "$SECOND_UDID" >/dev/null 2>&1 || true
 xcrun simctl delete "$SECOND_UDID" >/dev/null 2>&1 || true

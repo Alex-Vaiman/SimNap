@@ -7,10 +7,8 @@ final class SimulatorLock {
     private let fileDescriptor: Int32
 
     init(udid: String) throws {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("com.simnap.simulator-network/locks", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let path = dir.appendingPathComponent("\(udid).lock").path
+        let path = try SimNapSupportDirectory.locks()
+            .appendingPathComponent("\(udid).lock").path
 
         let fd = open(path, O_CREAT | O_RDWR, 0o600)
         guard fd >= 0 else {
