@@ -18,11 +18,15 @@ public enum OfflineError: String, Codable, Sendable {
 }
 
 public struct PersistedSimulatorNetworkState: Codable, Sendable, Equatable {
+    /// Identifies one lifetime of the persisted record. `nil` is reserved for
+    /// records written before epoch support and keeps decoding backward-compatible.
+    public let epoch: UUID?
     public let generation: UInt64
     public let mode: Mode
     public let offlineError: OfflineError
 
-    public init(generation: UInt64, mode: Mode, offlineError: OfflineError) {
+    public init(epoch: UUID? = nil, generation: UInt64, mode: Mode, offlineError: OfflineError) {
+        self.epoch = epoch
         self.generation = generation
         self.mode = mode
         self.offlineError = offlineError

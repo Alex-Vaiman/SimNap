@@ -37,8 +37,8 @@ final class DemoViewModel: ObservableObject {
         }
     }
 
-    /// Long enough to still be in flight when you flip the Simulator offline
-    /// from the CLI or menu bar — exercises exactly-once cancellation.
+    /// Long enough to remain in flight across an offline transition, proving
+    /// that only requests admitted after the transition are intercepted.
     func sendDelayedRequest() {
         delayedTask?.cancel()
         inFlightDelayed = true
@@ -98,7 +98,7 @@ struct ContentView: View {
                     .buttonStyle(.bordered)
                     .disabled(model.inFlightDelayed)
 
-                    Text("Toggle the Simulator offline from the CLI or menu bar while the 6s request is in flight to see it cancel immediately.")
+                    Text("Start the 6s request while online, then toggle offline. It keeps running; a new quick request fails immediately.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)

@@ -21,8 +21,6 @@ private enum MutationResult: Sendable {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var refreshTimer: Timer?
-    private var refreshTask: Task<Void, Never>?
-    private var mutationTask: Task<Void, Never>?
     private var statuses: [SimulatorDeviceStatus] = []
     private var hasLoadedSnapshot = false
     private var isRefreshing = false
@@ -44,22 +42,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func rebuildMenu() {
         let menu = NSMenu()
-        menu.addItem(withTitle: "SimNap", action: nil, keyEquivalent: "")
+        menu.autoenablesItems = false
+        let headerItem = menu.addItem(withTitle: "SimNap", action: nil, keyEquivalent: "")
+        headerItem.isEnabled = false
         menu.addItem(.separator())
 
-        let anyOffline = statuses.contains { $0.state.mode == .offline }
+        let anyOffline = statuses.contains { $0.state?.mode == .offline }
 
         if !hasLoadedSnapshot {
-            menu.addItem(withTitle: "Loading Simulators…", action: nil, keyEquivalent: "")
+            let loadingItem = menu.addItem(withTitle: "Loading Simulators…", action: nil, keyEquivalent: "")
+            loadingItem.isEnabled = false
         } else if statuses.isEmpty {
-            menu.addItem(withTitle: "No booted Simulators", action: nil, keyEquivalent: "")
+            let emptyItem = menu.addItem(withTitle: "No booted Simulators", action: nil, keyEquivalent: "")
+            emptyItem.isEnabled = false
         }
 
         for entry in statuses {
             let device = entry.device
-            let status = entry.state
-            let item = NSMenuItem(title: "\(device.name) — \(status.mode == .offline ? "Offline" : "Online")", action: nil, keyEquivalent: "")
+            let stateTitle: String
+            if let state = entry.state {
+                stateTitle = state.mode == .offline ? "Offline" : "Online"
+            } else {
+                stateTitle = "Status Unavailable"
+            }
+            let item = NSMenuItem(title: "\(device.name) — \(stateTitle)", action: nil, keyEquivalent: "")
             let submenu = NSMenu()
+            submenu.autoenablesItems = false
+            if let errorDescription = entry.errorDescription {
+                let errorItem = submenu.addItem(
+                    withTitle: "Status error: \(errorDescription)",
+                    action: nil,
+                    keyEquivalent: ""
+                )
+                errorItem.isEnabled = false
+                submenu.addItem(.separator())
+            }
             submenu.addItem(actionItem(title: "Online", udid: device.udid, action: #selector(setOnline(_:))))
             submenu.addItem(actionItem(title: "Offline — Timed Out", udid: device.udid, action: #selector(setOfflineTimedOut(_:))))
             submenu.addItem(actionItem(title: "Offline — Not Connected to Internet", udid: device.udid, action: #selector(setOfflineNotConnected(_:))))
@@ -80,7 +97,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Refresh", action: #selector(refresh), keyEquivalent: "r")
+        let refreshItem = menu.addItem(withTitle: "Refresh", action: #selector(refresh), keyEquivalent: "r")
+        refreshItem.isEnabled = !isRefreshing && !isMutating
         menu.addItem(withTitle: "Open CLI Help", action: #selector(openCLIHelp), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -147,9 +165,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return .failure(String(describing: error))
             }
         }
-        refreshTask = Task { [weak self] in
+        Task { [weak self] in
             let result = await operation.value
-            guard !Task.isCancelled, let self else { return }
+            guard let self else { return }
             isRefreshing = false
             switch result {
             case .success(let statuses):
@@ -182,7 +200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return .failure(String(describing: error))
             }
         }
-        mutationTask = Task { [weak self] in
+        Task { [weak self] in
             let result = await operation.value
             guard let self else { return }
             isMutating = false

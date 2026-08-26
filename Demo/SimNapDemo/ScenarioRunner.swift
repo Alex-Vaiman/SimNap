@@ -6,7 +6,7 @@ import SimulatorNetworkCore
 /// variable (set via `SIMCTL_CHILD_SIMNAP_SCENARIO` when spawning the app
 /// binary). Prints one structured `SIMNAP_RESULT {...}` JSON line to stdout
 /// and exits — lets a host-side script drive real cold launches, offline
-/// transitions, and in-flight cancellation without simulating taps.
+/// transitions, and request-admission boundaries without simulating taps.
 enum ScenarioRunner {
     static func runIfRequested() {
         guard let scenario = ProcessInfo.processInfo.environment["SIMNAP_SCENARIO"] else { return }
@@ -24,9 +24,36 @@ enum ScenarioRunner {
         case "state":
             emit(["scenario": "state", "state": describe(SimulatorNetwork.state)])
 
+        case "state-watch":
+            let initialState = describe(SimulatorNetwork.state)
+            print("SIMNAP_READY")
+            for await state in SimulatorNetwork.states {
+                let nextState = describe(state)
+                guard nextState != initialState else { continue }
+                emit([
+                    "scenario": "state-watch",
+                    "initialState": initialState,
+                    "state": nextState
+                ])
+                return
+            }
+
         case "quick":
             let outcome = await client.perform(client.integratedSession, url: URL(string: "https://httpbin.org/get")!)
             emit(payload(scenario: "quick", outcome: outcome, extra: ["stateAtStart": describe(SimulatorNetwork.state)]))
+
+        case "stop":
+            let stateBeforeStop = describe(SimulatorNetwork.state)
+            SimulatorNetwork.stop()
+            let outcome = await client.perform(client.integratedSession, url: URL(string: "https://httpbin.org/get")!)
+            emit(payload(
+                scenario: "stop",
+                outcome: outcome,
+                extra: [
+                    "stateBeforeStop": stateBeforeStop,
+                    "stateAfterStop": describe(SimulatorNetwork.state)
+                ]
+            ))
 
         case "headers":
             var request = URLRequest(url: URL(string: "https://httpbin.org/headers")!)
@@ -59,11 +86,14 @@ enum ScenarioRunner {
             await runNetworkFrameworkProbe()
 
         case "delayed-watch":
-            // Prints SIMNAP_READY the instant the request is in flight so the
-            // harness can trigger an offline transition mid-request, then
-            // reports how the request actually resolved.
+            // Start the request and give URL Loading System time to admit it
+            // while online before asking the harness to transition offline.
+            let requestTask = Task {
+                await client.perform(client.integratedSession, url: URL(string: "https://httpbin.org/delay/6")!)
+            }
+            try? await Task.sleep(nanoseconds: 500_000_000)
             print("SIMNAP_READY")
-            let outcome = await client.perform(client.integratedSession, url: URL(string: "https://httpbin.org/delay/6")!)
+            let outcome = await requestTask.value
             emit(payload(scenario: "delayed-watch", outcome: outcome, extra: [:]))
 
         default:

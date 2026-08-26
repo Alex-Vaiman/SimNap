@@ -144,7 +144,10 @@ tap coordinates involved.
   running cooperating processes to re-read that record. The notification
   carries no state itself; a missed, duplicated, or reordered one is
   harmless because every reconciliation re-reads the persisted record and a
-  monotonic per-Simulator generation number rejects stale reads.
-- On an offline transition, the runtime flips its transport gate before
-  cancelling anything, snapshots every active proxied request, and fails
-  each one exactly once with the configured `URLError`.
+  monotonic generation number rejects stale reads within one record epoch.
+  Recreating or repairing the record assigns a new epoch, so a running app
+  accepts its generation even when numbering starts again at one.
+- While online, the custom `URLProtocol` declines every request and the
+  original URL loading system remains fully responsible for it. While
+  offline, the protocol claims new HTTP/HTTPS requests and immediately fails
+  them with the configured `URLError`; requests admitted earlier keep running.

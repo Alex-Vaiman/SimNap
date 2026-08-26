@@ -17,11 +17,13 @@ public enum HostCoreError: Error, CustomStringConvertible {
 
 public struct SimulatorDeviceStatus: Sendable, Equatable {
     public let device: SimulatorDevice
-    public let state: PersistedSimulatorNetworkState
+    public let state: PersistedSimulatorNetworkState?
+    public let errorDescription: String?
 
-    public init(device: SimulatorDevice, state: PersistedSimulatorNetworkState) {
+    public init(device: SimulatorDevice, state: PersistedSimulatorNetworkState?, errorDescription: String? = nil) {
         self.device = device
         self.state = state
+        self.errorDescription = errorDescription
     }
 }
 
@@ -45,10 +47,18 @@ public final class SimulatorNetworkHostCore: SimulatorNetworkHostControlling {
 
     public func bootedDeviceStatuses() throws -> [SimulatorDeviceStatus] {
         try bootedDevices().map { device in
-            SimulatorDeviceStatus(
-                device: device,
-                state: try PersistenceWriter.readRecord(udid: device.udid) ?? .initial
-            )
+            do {
+                return SimulatorDeviceStatus(
+                    device: device,
+                    state: try PersistenceWriter.readRecord(udid: device.udid) ?? .initial
+                )
+            } catch {
+                return SimulatorDeviceStatus(
+                    device: device,
+                    state: nil,
+                    errorDescription: String(describing: error)
+                )
+            }
         }
     }
 
@@ -59,13 +69,27 @@ public final class SimulatorNetworkHostCore: SimulatorNetworkHostControlling {
 
     public func setOffline(deviceUDID: String, error: OfflineError) throws {
         try mutate(deviceUDID: deviceUDID) { previous in
-            PersistedSimulatorNetworkState(generation: previous.generation + 1, mode: .offline, offlineError: error)
+            guard previous.epoch == nil || previous.mode != .offline || previous.offlineError != error else {
+                return previous
+            }
+            return PersistedSimulatorNetworkState(
+                epoch: previous.epoch ?? UUID(),
+                generation: previous.generation + 1,
+                mode: .offline,
+                offlineError: error
+            )
         }
     }
 
     public func setOnline(deviceUDID: String) throws {
         try mutate(deviceUDID: deviceUDID) { previous in
-            PersistedSimulatorNetworkState(generation: previous.generation + 1, mode: .online, offlineError: previous.offlineError)
+            guard previous.epoch == nil || previous.mode != .online else { return previous }
+            return PersistedSimulatorNetworkState(
+                epoch: previous.epoch ?? UUID(),
+                generation: previous.generation + 1,
+                mode: .online,
+                offlineError: previous.offlineError
+            )
         }
     }
 
@@ -74,18 +98,35 @@ public final class SimulatorNetworkHostCore: SimulatorNetworkHostControlling {
 
         let lock = try SimulatorLock(udid: deviceUDID)
         try lock.withLock {
-            let previous = try PersistenceWriter.readRecord(udid: deviceUDID) ?? .initial
+            let previous = try previousRecordForMutation(deviceUDID: deviceUDID)
             let next = transform(previous)
-            try PersistenceWriter.writeRecord(udid: deviceUDID, record: next)
+            if next != previous {
+                try PersistenceWriter.writeRecord(udid: deviceUDID, record: next)
+            }
         }
 
+        try notifyWithRetry(deviceUDID: deviceUDID)
+    }
+
+    private func previousRecordForMutation(deviceUDID: String) throws -> PersistedSimulatorNetworkState {
         do {
-            try DarwinNotifier.notify(udid: deviceUDID)
-        } catch {
+            return try PersistenceWriter.readRecord(udid: deviceUDID) ?? .initial
+        } catch let error as PersistenceWriterError where error.canBeOverwrittenByMutation {
+            return .initial
+        }
+    }
+
+    private func notifyWithRetry(deviceUDID: String) throws {
+        for attempt in 0..<2 {
             do {
                 try DarwinNotifier.notify(udid: deviceUDID)
+                return
             } catch {
-                throw HostCoreError.statePersistedButNotificationFailed(deviceUDID, String(describing: error))
+                guard attempt == 1 else { continue }
+                throw HostCoreError.statePersistedButNotificationFailed(
+                    deviceUDID,
+                    String(describing: error)
+                )
             }
         }
     }

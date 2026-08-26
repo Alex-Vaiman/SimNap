@@ -10,6 +10,7 @@ final class Runtime: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.simnap.simulator-network.runtime")
     private var started = false
     private var enabled = false
+    private var lastAppliedEpoch: UUID?
     private var lastAppliedGeneration: UInt64 = 0
     private var currentState: SimulatorNetworkState = .online
     private var configuredOfflineError: OfflineError = .timedOut
@@ -27,7 +28,15 @@ final class Runtime: @unchecked Sendable {
     }
 
     func start() {
-        ensureStarted()
+        queue.sync {
+            started = true
+            guard !enabled else { return }
+            enabled = true
+
+            guard isSimulator else { return }
+            installDarwinObserverOnQueue()
+            reconcileOnQueue()
+        }
     }
 
     func ensureStarted() {
@@ -50,8 +59,6 @@ final class Runtime: @unchecked Sendable {
             guard started else { return }
 
             enabled = false
-            started = false
-            lastAppliedGeneration = 0
             removeDarwinObserverOnQueue()
 
             guard currentState != .online else { return }
@@ -154,6 +161,10 @@ final class Runtime: @unchecked Sendable {
     private func reconcileOnQueue() {
         guard enabled else { return }
         guard let record = PersistenceStore.read() else { return }
+        if record.epoch != lastAppliedEpoch {
+            lastAppliedEpoch = record.epoch
+            lastAppliedGeneration = 0
+        }
         guard record.generation >= lastAppliedGeneration else { return }
 
         let newState: SimulatorNetworkState = record.mode == .offline

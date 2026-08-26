@@ -9,6 +9,7 @@ HOST_DIR="$ROOT/Host"
 DEMO_PROJECT="$ROOT/Demo/SimNapDemo.xcodeproj"
 BUNDLE_ID="com.simnap.demo"
 SECOND_SIM_NAME="SimNap Verify Secondary"
+STATE_KEY="com.simnap.simulator-network.state"
 
 PASS=0
 FAIL=0
@@ -95,11 +96,12 @@ run_scenario() {
     | grep "SIMNAP_RESULT " | tail -1 | sed 's/^SIMNAP_RESULT //'
 }
 
-# Runs the delayed-watch scenario, triggers an offline transition on the CLI
-# the instant the request is confirmed in flight, and returns the JSON result.
-run_delayed_watch_and_interrupt() {
+# Runs a request admitted while online, transitions offline once it is in
+# flight, starts a new request while offline, and returns both JSON results.
+run_admission_boundary_check() {
   local udid=$1 error_mode=$2
-  local exec_path outfile pid waited
+  local exec_path outfile pid waited in_flight_result new_result
+  "$CLI" online --device "$udid" >/dev/null
   exec_path=$(app_exec_path "$udid")
   outfile=$(mktemp)
   SIMCTL_CHILD_SIMNAP_SCENARIO="delayed-watch" xcrun simctl spawn "$udid" "$exec_path" >"$outfile" 2>&1 &
@@ -111,9 +113,42 @@ run_delayed_watch_and_interrupt() {
     [ "$waited" -gt 50 ] && break
   done
   "$CLI" offline --device "$udid" --error "$error_mode" >/dev/null
+  new_result=$(run_scenario "$udid" quick)
   wait "$pid" 2>/dev/null
-  grep "SIMNAP_RESULT " "$outfile" | tail -1 | sed 's/^SIMNAP_RESULT //'
+  in_flight_result=$(grep "SIMNAP_RESULT " "$outfile" | tail -1 | sed 's/^SIMNAP_RESULT //')
   rm -f "$outfile"
+  printf '%s\n%s\n' "$in_flight_result" "$new_result"
+}
+
+# Keeps one app process alive, deletes its persisted record, writes a fresh
+# offline record, and returns the state change observed by that same process.
+run_state_watch_after_record_reset() {
+  local udid=$1
+  local exec_path outfile pid waited result
+  "$CLI" online --device "$udid" >/dev/null
+  exec_path=$(app_exec_path "$udid")
+  outfile=$(mktemp)
+  SIMCTL_CHILD_SIMNAP_SCENARIO="state-watch" xcrun simctl spawn "$udid" "$exec_path" >"$outfile" 2>&1 &
+  pid=$!
+  waited=0
+  while ! grep -q "SIMNAP_READY" "$outfile" 2>/dev/null; do
+    sleep 0.1
+    waited=$((waited + 1))
+    [ "$waited" -gt 50 ] && break
+  done
+  xcrun simctl spawn "$udid" defaults delete NSGlobalDomain "$STATE_KEY" >/dev/null
+  "$CLI" offline --device "$udid" --error timedOut >/dev/null
+  waited=0
+  while ! grep -q "SIMNAP_RESULT " "$outfile" 2>/dev/null; do
+    sleep 0.1
+    waited=$((waited + 1))
+    [ "$waited" -gt 50 ] && break
+  done
+  result=$(grep "SIMNAP_RESULT " "$outfile" | tail -1 | sed 's/^SIMNAP_RESULT //')
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  rm -f "$outfile"
+  printf '%s\n' "$result"
 }
 
 install_app "$PRIMARY_UDID"
@@ -145,6 +180,22 @@ BAD_UDID_EXIT=$?
 assert_nonzero_exit "bad UDID exits nonzero" "$BAD_UDID_EXIT"
 assert_true "bad UDID message is actionable" "$(grep -q "not booted" /tmp/simnap-verify-bad-udid.log && echo true || echo false)"
 
+xcrun simctl spawn "$PRIMARY_UDID" defaults write NSGlobalDomain "$STATE_KEY" -string "not-json-at-all" >/dev/null
+"$CLI" status --device "$PRIMARY_UDID" >/tmp/simnap-verify-corrupt-status.log 2>&1
+CORRUPT_STATUS_EXIT=$?
+assert_nonzero_exit "status reports a corrupt record" "$CORRUPT_STATUS_EXIT"
+"$CLI" online --device "$PRIMARY_UDID" >/tmp/simnap-verify-corrupt-repair.log 2>&1
+CORRUPT_REPAIR_EXIT=$?
+assert_eq "online repairs a corrupt record" "0" "$CORRUPT_REPAIR_EXIT"
+REPAIRED_GENERATION=$("$CLI" status --device "$PRIMARY_UDID" --json | jq -r '.generation')
+"$CLI" online --device "$PRIMARY_UDID" >/dev/null
+IDEMPOTENT_GENERATION=$("$CLI" status --device "$PRIMARY_UDID" --json | jq -r '.generation')
+assert_eq "retrying an already-applied state does not increment generation" "$REPAIRED_GENERATION" "$IDEMPOTENT_GENERATION"
+
+R=$(run_state_watch_after_record_reset "$PRIMARY_UDID")
+assert_eq "running app begins record-reset check online" "online" "$(echo "$R" | jq -r '.initialState')"
+assert_eq "running app accepts generation 1 from a new record epoch" "offline:timedOut" "$(echo "$R" | jq -r '.state')"
+
 echo
 log "=== B. Cold-launch guarantee, gating, forwarding ==="
 
@@ -164,6 +215,11 @@ R=$(run_scenario "$PRIMARY_UDID" quick)
 assert_eq "cold process, offline(timedOut): correct error" "timedOut" "$(echo "$R" | jq -r '.error')"
 assert_lt "cold process, offline(timedOut): rejected fast" "$(echo "$R" | jq -r '.elapsedMs')" 1000
 
+R=$(run_scenario "$PRIMARY_UDID" stop)
+assert_true "stop test starts from offline state" "$(echo "$R" | jq -r '.stateBeforeStop | startswith("offline")')"
+assert_eq "stop reports pass-through online state" "online" "$(echo "$R" | jq -r '.stateAfterStop')"
+assert_eq "request after stop reaches the network" "success" "$(echo "$R" | jq -r '.outcome')"
+
 "$CLI" online --device "$PRIMARY_UDID" >/dev/null
 R=$(run_scenario "$PRIMARY_UDID" headers)
 assert_eq "custom header forwarding succeeds" "success" "$(echo "$R" | jq -r '.outcome')"
@@ -174,17 +230,21 @@ assert_eq "redirect forwarding succeeds" "success" "$(echo "$R" | jq -r '.outcom
 assert_eq "redirect forwarding lands on final 200" "200" "$(echo "$R" | jq -r '.status')"
 
 echo
-log "=== C. Exactly-once in-flight cancellation ==="
+log "=== C. Request admission boundary ==="
 
-R=$(run_delayed_watch_and_interrupt "$PRIMARY_UDID" timedOut)
-assert_eq "in-flight request cancelled on offline transition" "failure" "$(echo "$R" | jq -r '.outcome')"
-assert_eq "cancellation delivers the configured error (timedOut)" "timedOut" "$(echo "$R" | jq -r '.error')"
-assert_lt "cancellation happens well before natural completion" "$(echo "$R" | jq -r '.elapsedMs')" 5500
+RESULTS=$(run_admission_boundary_check "$PRIMARY_UDID" timedOut)
+IN_FLIGHT_RESULT=$(printf '%s\n' "$RESULTS" | sed -n '1p')
+NEW_RESULT=$(printf '%s\n' "$RESULTS" | sed -n '2p')
+assert_eq "request admitted online survives offline transition" "success" "$(echo "$IN_FLIGHT_RESULT" | jq -r '.outcome')"
+assert_eq "new request is blocked after transition" "failure" "$(echo "$NEW_RESULT" | jq -r '.outcome')"
+assert_eq "new request gets configured timedOut error" "timedOut" "$(echo "$NEW_RESULT" | jq -r '.error')"
 
-"$CLI" online --device "$PRIMARY_UDID" >/dev/null
-R=$(run_delayed_watch_and_interrupt "$PRIMARY_UDID" notConnectedToInternet)
-assert_eq "cancellation delivers the configured error (notConnectedToInternet)" "notConnectedToInternet" "$(echo "$R" | jq -r '.error')"
-assert_lt "second cancellation also happens well before completion" "$(echo "$R" | jq -r '.elapsedMs')" 5500
+RESULTS=$(run_admission_boundary_check "$PRIMARY_UDID" notConnectedToInternet)
+IN_FLIGHT_RESULT=$(printf '%s\n' "$RESULTS" | sed -n '1p')
+NEW_RESULT=$(printf '%s\n' "$RESULTS" | sed -n '2p')
+assert_eq "second online-admitted request also survives" "success" "$(echo "$IN_FLIGHT_RESULT" | jq -r '.outcome')"
+assert_eq "second new request is blocked" "failure" "$(echo "$NEW_RESULT" | jq -r '.outcome')"
+assert_eq "new request gets configured notConnected error" "notConnectedToInternet" "$(echo "$NEW_RESULT" | jq -r '.error')"
 
 echo
 log "=== D. Documented boundary ==="

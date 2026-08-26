@@ -83,11 +83,16 @@ enum SimulatorDiscovery {
         process.standardOutput = stdout
         process.standardError = stderr
 
-        try process.run()
-        process.waitUntilExit()
-
-        try stdout.close()
-        try stderr.close()
+        do {
+            try process.run()
+            process.waitUntilExit()
+            try stdout.close()
+            try stderr.close()
+        } catch {
+            try? stdout.close()
+            try? stderr.close()
+            throw error
+        }
 
         let outData = try Data(contentsOf: stdoutURL)
         let errData = try Data(contentsOf: stderrURL)

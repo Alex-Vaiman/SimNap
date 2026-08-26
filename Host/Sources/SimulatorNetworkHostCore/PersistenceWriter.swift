@@ -16,6 +16,15 @@ enum PersistenceWriterError: Error, CustomStringConvertible {
             return "The stored SimNap state is invalid: \(message)"
         }
     }
+
+    var canBeOverwrittenByMutation: Bool {
+        switch self {
+        case .invalidStoredValue, .invalidRecord:
+            return true
+        case .invalidGlobalDomain:
+            return false
+        }
+    }
 }
 
 /// Reads and writes the package-owned record inside one Simulator's global
