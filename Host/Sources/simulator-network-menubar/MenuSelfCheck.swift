@@ -70,6 +70,13 @@ enum MenuSelfCheck {
         if !menu.items.contains(where: { $0.title == "About SimNap" }) {
             failures.append("the About item is missing")
         }
+
+        // Opening the menu triggers a refresh, so a progress line would show
+        // on every open and shift the menu while it is being read.
+        checked += 1
+        if menu.items.contains(where: { $0.title.localizedCaseInsensitiveContains("refreshing") }) {
+            failures.append("the menu carries a 'Refreshing' line, which appears on every open")
+        }
     }
 
     private static func validateStatusIcons(failures: inout [String], checked: inout Int) {

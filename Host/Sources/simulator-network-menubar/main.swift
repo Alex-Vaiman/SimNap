@@ -30,6 +30,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var isRefreshing = false
     private var isMutating = false
     private var refreshError: String?
+    /// Bumped by every mutation, so a refresh that started earlier can tell
+    /// that its snapshot is stale and drop it.
+    private var refreshEpoch = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -130,14 +133,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(item)
         }
 
+        // A failure is worth a line. A refresh in progress is not: the menu
+        // refreshes because it was opened, so the line would appear on every
+        // single open and change the menu's height while being read.
         if let refreshError {
             menu.addItem(.separator())
             let errorItem = menu.addItem(withTitle: "Refresh failed: \(refreshError)", action: nil, keyEquivalent: "")
             errorItem.isEnabled = false
-        } else if isRefreshing {
-            menu.addItem(.separator())
-            let refreshingItem = menu.addItem(withTitle: "Refreshing…", action: nil, keyEquivalent: "")
-            refreshingItem.isEnabled = false
         }
 
         menu.addItem(.separator())
@@ -173,7 +175,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
         item.representedObject = udid
-        item.isEnabled = !isMutating && !isRefreshing
+        // Only a mutation disables these. Disabling them during a refresh
+        // greyed out every toggle on each menu open, since opening triggers one.
+        item.isEnabled = !isMutating
         return item
     }
 
@@ -227,7 +231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !isRefreshing, !isMutating else { return }
         isRefreshing = true
         refreshError = nil
-        rebuildMenu()
+        let startedAtEpoch = refreshEpoch
 
         let operation = Task.detached(priority: .utility) { () -> SnapshotResult in
             do {
@@ -240,6 +244,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let result = await operation.value
             guard let self else { return }
             isRefreshing = false
+            guard startedAtEpoch == refreshEpoch else {
+                // A mutation landed while this was reading, so this snapshot
+                // describes the state before it. Read again rather than
+                // waiting for the timer — the mutation's own refresh was
+                // refused while this one was still in flight.
+                requestRefresh()
+                return
+            }
             switch result {
             case .success(let statuses):
                 self.statuses = statuses
@@ -253,8 +265,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func perform(_ mutation: Mutation) {
-        guard !isMutating, !isRefreshing else { return }
+        guard !isMutating else { return }
         isMutating = true
+        // Any refresh already in flight read state from before this mutation,
+        // so its result must not be allowed to land on top of it.
+        refreshEpoch += 1
         rebuildMenu()
 
         let operation = Task.detached(priority: .userInitiated) { () -> MutationResult in

@@ -160,6 +160,12 @@ are fully functional without it.
 The menu header shows the running version, so which build is installed is
 answered by opening it; "About SimNap" repeats it with a little more context.
 
+Opening the menu triggers the refresh, so there is no progress line for it and
+the device toggles stay usable while it runs — a read in flight is no reason to
+grey them out. Only a mutation disables them. A toggle made while a read is in
+flight discards that read rather than letting a pre-mutation snapshot land on
+top of it.
+
 There is no manual "Refresh" item: the menu refreshes when you open it, and
 a timer keeps the status-bar icon current while it is closed. Only one
 instance runs at a time — a second launch exits with a message rather than
