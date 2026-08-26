@@ -107,6 +107,12 @@ a timer keeps the status-bar icon current while it is closed. Only one
 instance runs at a time — a second launch exits with a message rather than
 adding a second, indistinguishable status item.
 
+The status-bar icon is an SF Symbol with one glyph per aggregate state:
+`wifi` when every booted Simulator is online, `wifi.slash` when at least one
+is simulated offline, and `wifi.exclamationmark` when a status could not be
+read — an unknown status is never reported as a confident "all online". The
+tooltip spells the state out.
+
 ## Demo app
 
 `Demo/SimNapDemo.xcodeproj` is a one-screen iOS app: a live state badge, a
@@ -152,10 +158,13 @@ Covers:
   disabled, where eight commands lost seven updates.
 - A headless menu self-check (`simulator-network-menubar --self-check`)
   asserting every actionable menu item has a target that responds to its
-  action, that automatic enabling stays off, and that repopulating the menu
-  in place is idempotent. A menu is otherwise only exercised by clicking it,
-  so a mis-targeted item raises `unrecognized selector` in the user's face
-  and nothing catches it.
+  action, that submenu parents are left to AppKit, that automatic enabling
+  stays off, and that repopulating the menu in place is idempotent. A menu is
+  otherwise only exercised by clicking it, so a mis-targeted item raises
+  `unrecognized selector` in the user's face and nothing catches it. The same
+  check covers the status icon: every symbol resolves (an unresolved one
+  renders an empty, invisible status item), no two states share a symbol, and
+  the state mapping is asserted case by case.
 - The menu bar single-instance lock: a second launch is refused, the
   self-check still runs alongside a live instance, and the lock is released
   when the app exits.

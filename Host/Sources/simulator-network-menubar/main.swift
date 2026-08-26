@@ -33,8 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "SimNap"
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         menu.delegate = self
         statusItem.menu = menu
         rebuildMenu()
@@ -56,7 +55,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func rebuildMenu() {
         populate(menu)
-        statusItem.button?.title = statuses.contains { $0.state?.mode == .offline } ? "SimNap ⚠︎" : "SimNap"
+        applyStatusIcon()
+    }
+
+    private func applyStatusIcon() {
+        guard let button = statusItem.button else { return }
+        let icon = StatusIcon.resolve(statuses: statuses, refreshError: refreshError)
+        button.toolTip = icon.label
+        if let image = icon.image {
+            button.image = image
+            button.imagePosition = .imageOnly
+            button.title = ""
+        } else {
+            button.image = nil
+            button.title = icon.fallbackTitle
+        }
     }
 
     /// Builds a standalone menu so the same construction can be validated

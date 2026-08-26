@@ -1,4 +1,6 @@
 import AppKit
+import SimulatorNetworkCore
+import SimulatorNetworkHostCore
 
 /// Headless validation of the status-bar menu, run via `--self-check`.
 ///
@@ -36,6 +38,8 @@ enum MenuSelfCheck {
         }
         validate(menu: reused, path: "repopulated", failures: &failures, checked: &checked)
 
+        validateStatusIcons(failures: &failures, checked: &checked)
+
         if failures.isEmpty {
             print("menu self-check: \(checked) items OK")
             return 0
@@ -44,6 +48,63 @@ enum MenuSelfCheck {
             print("menu self-check FAILED: \(failure)")
         }
         return 1
+    }
+
+    private static func validateStatusIcons(failures: inout [String], checked: inout Int) {
+        var symbolsSeen: [String: StatusIcon] = [:]
+
+        for icon in StatusIcon.allCases {
+            checked += 1
+
+            // A name that does not resolve yields no image, and a status item
+            // with no image and no title is invisible — indistinguishable from
+            // the app having failed to launch.
+            if icon.image == nil {
+                failures.append(
+                    "status icon \(icon): SF Symbol '\(icon.symbolName)' did not resolve, the status item would render empty"
+                )
+            }
+
+            if let clash = symbolsSeen[icon.symbolName] {
+                failures.append(
+                    "status icon \(icon) reuses symbol '\(icon.symbolName)' from \(clash); the states would look identical"
+                )
+            }
+            symbolsSeen[icon.symbolName] = icon
+        }
+
+        // The mapping itself: an unreadable status must not be reported as a
+        // confident "all online".
+        let online = SimulatorDeviceStatus(
+            device: SimulatorDevice(udid: "A", name: "A", runtime: "iOS"),
+            state: PersistedSimulatorNetworkState(generation: 1, mode: .online, offlineError: .timedOut)
+        )
+        let offline = SimulatorDeviceStatus(
+            device: SimulatorDevice(udid: "B", name: "B", runtime: "iOS"),
+            state: PersistedSimulatorNetworkState(generation: 1, mode: .offline, offlineError: .timedOut)
+        )
+        let unreadable = SimulatorDeviceStatus(
+            device: SimulatorDevice(udid: "C", name: "C", runtime: "iOS"),
+            state: nil,
+            errorDescription: "unreadable"
+        )
+
+        let cases: [(String, [SimulatorDeviceStatus], String?, StatusIcon)] = [
+            ("no devices", [], nil, .neutral),
+            ("all online", [online], nil, .neutral),
+            ("one offline", [online, offline], nil, .offline),
+            ("unreadable status", [online, unreadable], nil, .warning),
+            ("refresh failed", [online], "boom", .warning),
+            ("offline plus unreadable", [offline, unreadable], nil, .warning)
+        ]
+
+        for (name, statuses, refreshError, expected) in cases {
+            checked += 1
+            let actual = StatusIcon.resolve(statuses: statuses, refreshError: refreshError)
+            if actual != expected {
+                failures.append("status icon for '\(name)': expected \(expected), got \(actual)")
+            }
+        }
     }
 
     private static func validate(menu: NSMenu, path: String, failures: inout [String], checked: inout Int) {
