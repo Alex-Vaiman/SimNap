@@ -23,8 +23,29 @@ final class SimulatorLock {
         self.fileDescriptor = fd
     }
 
-    func lock() { flock(fileDescriptor, LOCK_EX) }
-    func unlock() { flock(fileDescriptor, LOCK_UN) }
+    func withLock<T>(_ operation: () throws -> T) throws -> T {
+        try apply(operation: LOCK_EX, description: "acquire")
+        do {
+            let result = try operation()
+            try apply(operation: LOCK_UN, description: "release")
+            return result
+        } catch {
+            _ = flock(fileDescriptor, LOCK_UN)
+            throw error
+        }
+    }
+
+    private func apply(operation: Int32, description: String) throws {
+        while flock(fileDescriptor, operation) != 0 {
+            guard errno == EINTR else {
+                throw NSError(
+                    domain: "SimulatorLock",
+                    code: Int(errno),
+                    userInfo: [NSLocalizedDescriptionKey: "Failed to \(description) Simulator lock."]
+                )
+            }
+        }
+    }
 
     deinit { close(fileDescriptor) }
 }

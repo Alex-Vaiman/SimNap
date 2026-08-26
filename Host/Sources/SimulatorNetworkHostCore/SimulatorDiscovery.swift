@@ -56,20 +56,41 @@ enum SimulatorDiscovery {
 
     @discardableResult
     static func run(executable: String, arguments: [String]) throws -> String {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("com.simnap.simulator-network/process-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let stdoutURL = temporaryDirectory.appendingPathComponent("stdout")
+        let stderrURL = temporaryDirectory.appendingPathComponent("stderr")
+        guard
+            FileManager.default.createFile(atPath: stdoutURL.path, contents: nil),
+            FileManager.default.createFile(atPath: stderrURL.path, contents: nil)
+        else {
+            throw SimulatorDiscoveryError.simctlFailed("Failed to create process output files.")
+        }
+
+        let stdout = try FileHandle(forWritingTo: stdoutURL)
+        let stderr = try FileHandle(forWritingTo: stderrURL)
+        defer {
+            try? stdout.close()
+            try? stderr.close()
+        }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
-
-        let stdout = Pipe()
-        let stderr = Pipe()
         process.standardOutput = stdout
         process.standardError = stderr
 
         try process.run()
         process.waitUntilExit()
 
-        let outData = stdout.fileHandleForReading.readDataToEndOfFile()
-        let errData = stderr.fileHandleForReading.readDataToEndOfFile()
+        try stdout.close()
+        try stderr.close()
+
+        let outData = try Data(contentsOf: stdoutURL)
+        let errData = try Data(contentsOf: stderrURL)
         let outString = String(data: outData, encoding: .utf8) ?? ""
         let errString = String(data: errData, encoding: .utf8) ?? ""
 
