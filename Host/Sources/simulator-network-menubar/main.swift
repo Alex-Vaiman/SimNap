@@ -18,8 +18,12 @@ private enum MutationResult: Sendable {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
+    /// One menu for the lifetime of the app, repopulated in place. Assigning a
+    /// new menu to the status item while the user has it open replaces the
+    /// menu out from under them.
+    private let menu = NSMenu()
     private var refreshTimer: Timer?
     private var statuses: [SimulatorDeviceStatus] = []
     private var hasLoadedSnapshot = false
@@ -31,8 +35,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "SimNap"
+        menu.delegate = self
+        statusItem.menu = menu
         rebuildMenu()
         requestRefresh()
+        // Keeps the status-bar icon current while the menu is closed; the menu
+        // contents themselves are refreshed when it opens.
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.requestRefresh()
@@ -40,16 +48,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func rebuildMenu() {
-        let menu = buildMenu()
-        statusItem.button?.title = statuses.contains { $0.state?.mode == .offline } ? "SimNap ⚠︎" : "SimNap"
-        statusItem.menu = menu
+    /// Refreshing when the menu opens is what makes a manual "Refresh" item
+    /// unnecessary: what you see is fetched because you looked at it.
+    func menuWillOpen(_ menu: NSMenu) {
+        requestRefresh()
     }
 
-    /// Builds the menu without touching the status item, so the same
-    /// construction can be validated headlessly by `--self-check`.
+    private func rebuildMenu() {
+        populate(menu)
+        statusItem.button?.title = statuses.contains { $0.state?.mode == .offline } ? "SimNap ⚠︎" : "SimNap"
+    }
+
+    /// Builds a standalone menu so the same construction can be validated
+    /// headlessly by `--self-check`.
     func buildMenu() -> NSMenu {
         let menu = NSMenu()
+        populate(menu)
+        return menu
+    }
+
+    func populate(_ menu: NSMenu) {
+        menu.removeAllItems()
         menu.autoenablesItems = false
         let headerItem = menu.addItem(withTitle: "SimNap", action: nil, keyEquivalent: "")
         headerItem.isEnabled = false
@@ -103,16 +122,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         menu.addItem(.separator())
-        let refreshItem = menu.addItem(withTitle: "Refresh", action: #selector(refresh), keyEquivalent: "r")
-        refreshItem.target = self
-        refreshItem.isEnabled = !isRefreshing && !isMutating
         menu.addItem(withTitle: "Open CLI Help", action: #selector(openCLIHelp), keyEquivalent: "").target = self
         menu.addItem(.separator())
         // Quit goes through a local selector, not NSApplication.terminate:,
         // because this delegate is the target and does not implement it.
         menu.addItem(withTitle: "Quit", action: #selector(quitApp), keyEquivalent: "q").target = self
-
-        return menu
     }
 
     /// Populates the snapshot with one healthy device and one whose status
@@ -163,10 +177,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString("simulator-network offline --device \(udid)", forType: .string)
-    }
-
-    @objc private func refresh() {
-        requestRefresh()
     }
 
     @objc private func quitApp() {
@@ -253,8 +263,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 MainActor.assumeIsolated {
+    // Before the instance guard: the self-check is a short-lived validation
+    // and must not be refused while a real instance is running.
     if CommandLine.arguments.contains("--self-check") {
         exit(MenuSelfCheck.run())
+    }
+
+    guard SingleInstanceGuard.acquire() else {
+        FileHandle.standardError.write(Data(
+            "SimNap menu bar is already running. Use the existing status-bar icon, or quit it first.\n".utf8
+        ))
+        exit(1)
     }
 
     let app = NSApplication.shared

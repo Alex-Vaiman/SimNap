@@ -390,7 +390,30 @@ if kill -0 "$MENUBAR_PID" 2>/dev/null; then
 else
   fail "menu bar app crashed or exited immediately"
 fi
+
+# A second copy would add an indistinguishable second status item and double
+# the simctl polling load.
+"$MENUBAR" >/tmp/simnap-verify-second-instance.log 2>&1
+SECOND_INSTANCE_EXIT=$?
+assert_nonzero_exit "a second menu bar instance refuses to start" "$SECOND_INSTANCE_EXIT"
+assert_true "second instance explains why" \
+  "$(grep -q "already running" /tmp/simnap-verify-second-instance.log && echo true || echo false)"
+
+# The self-check must stay usable while a real instance holds the lock.
+"$MENUBAR" --self-check >/dev/null 2>&1
+assert_eq "self-check still runs alongside a live instance" "0" "$?"
+
 kill "$MENUBAR_PID" 2>/dev/null || true
+sleep 2
+"$MENUBAR" &
+MENUBAR_PID_2=$!
+sleep 2
+if kill -0 "$MENUBAR_PID_2" 2>/dev/null; then
+  pass "instance lock is released when the app exits"
+else
+  fail "instance lock outlived the process — a new instance could not start"
+fi
+kill "$MENUBAR_PID_2" 2>/dev/null || true
 
 echo
 log "=== Cleanup ==="

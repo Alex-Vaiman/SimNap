@@ -21,6 +21,21 @@ enum MenuSelfCheck {
         delegate.loadSelfCheckSampleStatuses()
         validate(menu: delegate.buildMenu(), path: "populated", failures: &failures, checked: &checked)
 
+        // The live menu is repopulated in place on every refresh rather than
+        // replaced, so repopulating the same menu must be idempotent — a
+        // missing removeAllItems would silently append duplicates each cycle.
+        let reused = NSMenu()
+        delegate.populate(reused)
+        let firstPassCount = reused.numberOfItems
+        delegate.populate(reused)
+        delegate.populate(reused)
+        if reused.numberOfItems != firstPassCount {
+            failures.append(
+                "repopulating a menu in place is not idempotent: \(firstPassCount) items became \(reused.numberOfItems)"
+            )
+        }
+        validate(menu: reused, path: "repopulated", failures: &failures, checked: &checked)
+
         if failures.isEmpty {
             print("menu self-check: \(checked) items OK")
             return 0

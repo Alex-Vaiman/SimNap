@@ -97,6 +97,11 @@ booted Simulators, lets you toggle each online/offline, and copies the
 equivalent CLI command. Not required for anything; the CLI and the package
 are fully functional without it.
 
+There is no manual "Refresh" item: the menu refreshes when you open it, and
+a timer keeps the status-bar icon current while it is closed. Only one
+instance runs at a time — a second launch exits with a message rather than
+adding a second, indistinguishable status item.
+
 ## Demo app
 
 `Demo/SimNapDemo.xcodeproj` is a one-screen iOS app: a live state badge, a
@@ -139,9 +144,13 @@ Covers:
   generation may map to two different records.
 - A headless menu self-check (`simulator-network-menubar --self-check`)
   asserting every actionable menu item has a target that responds to its
-  action, and that automatic enabling stays off. A menu is otherwise only
-  exercised by clicking it, so a mis-targeted item raises
-  `unrecognized selector` in the user's face and nothing catches it.
+  action, that automatic enabling stays off, and that repopulating the menu
+  in place is idempotent. A menu is otherwise only exercised by clicking it,
+  so a mis-targeted item raises `unrecognized selector` in the user's face
+  and nothing catches it.
+- The menu bar single-instance lock: a second launch is refused, the
+  self-check still runs alongside a live instance, and the lock is released
+  when the app exits.
 
 The demo app's `ScenarioRunner` (`Demo/SimNapDemo/ScenarioRunner.swift`) is
 what makes this possible headlessly: set `SIMNAP_SCENARIO` in its
