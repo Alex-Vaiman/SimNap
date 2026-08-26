@@ -2,21 +2,18 @@ import Foundation
 
 /// Makes `SimulatorNetwork.start()` mean what its name says.
 ///
-/// A `URLSession` built from a `URLSessionConfiguration` consults only that
-/// configuration's `protocolClasses`; `URLProtocol.registerClass` does not
-/// reach it. So the only way for `start()` alone to gate an app's traffic is
-/// to hand out configurations that already carry the protocol — which is what
-/// this does, by exchanging the implementations of
-/// `+[NSURLSessionConfiguration defaultSessionConfiguration]` and
-/// `ephemeralSessionConfiguration`.
+/// A `URLSession` reads `protocolClasses` off its configuration when the
+/// session is constructed. Exchanging that getter therefore reaches every
+/// configuration — however and whenever it was built — rather than only the
+/// ones handed out by the `default`/`ephemeral` factories after `start()`.
 ///
 /// Compiled only for the Simulator. The usual objection to patching Foundation
-/// is the risk it carries into production, and there is no production here:
-/// on a device this file's work is `#if`'d out entirely.
+/// is the risk it carries into production, and there is none here: on a device
+/// this work is `#if`'d out entirely.
 ///
-/// This only ever *adds* coverage. `configuration(from:)` is untouched and
-/// keeps working exactly as before, and a configuration obtained before
-/// `start()` is unaffected — the same as today.
+/// This only ever *adds* coverage. `configuration(from:)` is untouched, and
+/// the getter filters this protocol out before re-inserting it, so an
+/// explicitly integrated configuration cannot end up with it twice.
 enum ConfigurationInterception {
     private static let lock = NSLock()
     private static var isInstalled = false
@@ -24,8 +21,9 @@ enum ConfigurationInterception {
     static func install() {
         #if targetEnvironment(simulator)
         lock.lock(); defer { lock.unlock() }
-        guard !isInstalled else { return }
-        isInstalled = exchangeBothImplementations()
+        guard !isInstalled, exchangeProtocolClassesGetter() else { return }
+        URLProtocol.registerClass(SimulatorURLProtocol.self)
+        isInstalled = true
         #endif
     }
 
@@ -33,33 +31,34 @@ enum ConfigurationInterception {
         #if targetEnvironment(simulator)
         lock.lock(); defer { lock.unlock() }
         guard isInstalled else { return }
-        // Exchanging a second time restores the originals.
-        _ = exchangeBothImplementations()
+        URLProtocol.unregisterClass(SimulatorURLProtocol.self)
+        // Exchanging a second time restores the previous implementation.
+        _ = exchangeProtocolClassesGetter()
         isInstalled = false
         #endif
     }
 
     #if targetEnvironment(simulator)
-    /// Returns false if either selector could not be found, in which case
-    /// nothing is exchanged and behaviour falls back to explicit integration.
-    private static func exchangeBothImplementations() -> Bool {
-        let exchangedDefault = exchange(
-            original: Selector(("defaultSessionConfiguration")),
-            replacement: #selector(URLSessionConfiguration.simnapInterceptedDefault)
-        )
-        let exchangedEphemeral = exchange(
-            original: Selector(("ephemeralSessionConfiguration")),
-            replacement: #selector(URLSessionConfiguration.simnapInterceptedEphemeral)
-        )
-        return exchangedDefault || exchangedEphemeral
-    }
-
-    private static func exchange(original: Selector, replacement: Selector) -> Bool {
+    /// Returns false if either method is missing, in which case nothing is
+    /// exchanged and behaviour falls back to explicit integration.
+    private static func exchangeProtocolClassesGetter() -> Bool {
+        // `URLSessionConfiguration.default` is not a `URLSessionConfiguration`
+        // — it is a private subclass. The getter has to be taken from the real
+        // class of an instance, or the exchange silently never takes effect.
+        guard let configurationClass: AnyClass = object_getClass(URLSessionConfiguration.default) else {
+            return false
+        }
         guard
-            let originalMethod = class_getClassMethod(URLSessionConfiguration.self, original),
-            let replacementMethod = class_getClassMethod(URLSessionConfiguration.self, replacement)
+            let original = class_getInstanceMethod(
+                configurationClass,
+                #selector(getter: URLSessionConfiguration.protocolClasses)
+            ),
+            let replacement = class_getInstanceMethod(
+                URLSessionConfiguration.self,
+                #selector(URLSessionConfiguration.simnapProtocolClasses)
+            )
         else { return false }
-        method_exchangeImplementations(originalMethod, replacementMethod)
+        method_exchangeImplementations(original, replacement)
         return true
     }
     #endif
@@ -67,14 +66,17 @@ enum ConfigurationInterception {
 
 #if targetEnvironment(simulator)
 extension URLSessionConfiguration {
-    // After the exchange these names reach the original implementations, so
-    // the recursive-looking call is the real `defaultSessionConfiguration`.
-    @objc fileprivate class func simnapInterceptedDefault() -> URLSessionConfiguration {
-        SimulatorNetwork.configuration(from: simnapInterceptedDefault())
-    }
-
-    @objc fileprivate class func simnapInterceptedEphemeral() -> URLSessionConfiguration {
-        SimulatorNetwork.configuration(from: simnapInterceptedEphemeral())
+    /// After the exchange this name reaches the previous implementation — the
+    /// original getter, or the host application's own swizzle of it if there
+    /// is one. Calling through rather than replacing is what lets both stand:
+    /// an app already injecting its own `URLProtocol` keeps it.
+    @objc fileprivate func simnapProtocolClasses() -> [AnyClass]? {
+        guard let existing = simnapProtocolClasses() else {
+            return [SimulatorURLProtocol.self]
+        }
+        var classes = existing.filter { $0 != SimulatorURLProtocol.self }
+        classes.insert(SimulatorURLProtocol.self, at: 0)
+        return classes
     }
 }
 #endif

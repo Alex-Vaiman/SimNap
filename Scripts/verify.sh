@@ -166,6 +166,21 @@ run_state_watch_after_record_reset() {
   printf '%s\n' "$result"
 }
 
+# A `defaults` write inside a Simulator is propagated by cfprefsd, which can
+# lag under load — booting a second Simulator, for instance. Polls the state a
+# fresh app process actually sees, and still returns the last value it read so
+# a genuine mismatch fails rather than hanging.
+app_state_settling_to() {
+  local udid=$1 expected=$2 attempts=0 state=""
+  while [ "$attempts" -lt 6 ]; do
+    state=$(run_scenario "$udid" state | jq -r '.state')
+    [ "$state" = "$expected" ] && break
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+  printf '%s' "$state"
+}
+
 install_app "$PRIMARY_UDID"
 
 # The installed binary — not the one just built — is what every scenario runs,
@@ -173,7 +188,7 @@ install_app "$PRIMARY_UDID"
 # instead would pass happily against a stale install that still answers `state`
 # but knows nothing of, say, `stop-start`.
 log "Checking the installed app supports every scenario this suite uses..."
-REQUIRED_SCENARIOS="state state-watch quick stop stop-start headers redirect post-online post-offline start-only shared-session unintegrated network-framework delayed-watch"
+REQUIRED_SCENARIOS="state state-watch quick stop stop-start headers redirect post-online post-offline start-only start-later coexistence shared-session unintegrated network-framework delayed-watch"
 CAPABILITIES=$(run_scenario "$PRIMARY_UDID" capabilities)
 if [ -z "$CAPABILITIES" ]; then
   abort "the installed app emitted no SIMNAP_RESULT for 'capabilities' — it is stale or crashed on launch"
@@ -313,14 +328,34 @@ assert_eq "start() alone gates a plain URLSession(configuration: .default)" "fai
 assert_eq "that session fails with the configured error" "timedOut" "$(echo "$R" | jq -r '.afterStartError')"
 assert_eq "stop() restores Foundation for the same construction" "success" "$(echo "$R" | jq -r '.afterStop')"
 
+# The protocolClasses getter is read when the session is constructed, so even
+# a configuration obtained before start() is reached.
+R=$(run_scenario "$PRIMARY_UDID" start-later)
+assert_eq "a session built from a pre-start() configuration is gated" "failure" "$(echo "$R" | jq -r '.sessionBuiltBeforeStart')"
+assert_eq "a session built after start() is gated" "failure" "$(echo "$R" | jq -r '.sessionBuiltAfterStart')"
+
+# An application that swizzles the same getter must keep working. While online
+# SimNap declines every request, so the app's own protocol has to handle its
+# own; if SimNap had replaced that getter instead of chaining, it would not.
+"$CLI" online --device "$PRIMARY_UDID" >/dev/null
+R=$(run_scenario "$PRIMARY_UDID" coexistence)
+assert_true "an app's own URLProtocol still runs alongside SimNap" "$(echo "$R" | jq -r '.hostAppProtocolStillRuns')"
+assert_eq "that app's request is served by its own protocol" "success" "$(echo "$R" | jq -r '.hostAppRequest')"
+assert_eq "ordinary traffic is untouched while online" "success" "$(echo "$R" | jq -r '.simnapGatedRequest')"
+
+"$CLI" offline --device "$PRIMARY_UDID" --error timedOut >/dev/null
+R=$(run_scenario "$PRIMARY_UDID" coexistence)
+assert_eq "while offline SimNap claims the request first, as simulated offline should" "failure" "$(echo "$R" | jq -r '.hostAppRequest')"
+
 echo
 log "=== D. Documented boundary ==="
 
-# URLSession.shared is built internally and never goes through the intercepted
-# class methods, so it stays outside the boundary even after start().
+# Swizzling the instance getter reaches URLSession.shared too, which the
+# class-method approach did not.
 R=$(run_scenario "$PRIMARY_UDID" shared-session)
 assert_true "shared-session check runs while offline" "$(echo "$R" | jq -r '.stateAtStart | startswith("offline")')"
-assert_eq "URLSession.shared is NOT gated, even after start()" "success" "$(echo "$R" | jq -r '.outcome')"
+assert_eq "URLSession.shared is gated after start()" "failure" "$(echo "$R" | jq -r '.outcome')"
+assert_eq "URLSession.shared fails with the configured error" "timedOut" "$(echo "$R" | jq -r '.error')"
 
 "$CLI" offline --device "$PRIMARY_UDID" --error timedOut >/dev/null
 R=$(run_scenario "$PRIMARY_UDID" unintegrated)
@@ -347,10 +382,10 @@ install_app "$SECOND_UDID"
 "$CLI" offline --device "$PRIMARY_UDID" --error timedOut >/dev/null
 "$CLI" online --device "$SECOND_UDID" >/dev/null
 
-R1=$(run_scenario "$PRIMARY_UDID" state)
-R2=$(run_scenario "$SECOND_UDID" state)
-assert_eq "primary Simulator independently offline" "offline:timedOut" "$(echo "$R1" | jq -r '.state')"
-assert_eq "secondary Simulator independently online" "online" "$(echo "$R2" | jq -r '.state')"
+assert_eq "primary Simulator independently offline" "offline:timedOut" \
+  "$(app_state_settling_to "$PRIMARY_UDID" "offline:timedOut")"
+assert_eq "secondary Simulator independently online" "online" \
+  "$(app_state_settling_to "$SECOND_UDID" "online")"
 
 "$CLI" online --device "$PRIMARY_UDID" >/dev/null
 

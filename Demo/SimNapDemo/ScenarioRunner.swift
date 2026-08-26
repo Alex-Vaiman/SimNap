@@ -23,7 +23,7 @@ enum ScenarioRunner {
     /// against a stale install.
     private static let supportedScenarios = [
         "capabilities", "state", "state-watch", "quick", "stop", "stop-start",
-        "post-online", "post-offline", "start-only", "shared-session", "headers", "redirect", "unintegrated",
+        "post-online", "post-offline", "start-only", "start-later", "coexistence", "shared-session", "headers", "redirect", "unintegrated",
         "network-framework", "delayed-watch"
     ]
 
@@ -142,6 +142,44 @@ enum ScenarioRunner {
                 "afterStart": outcomeLabel(gated),
                 "afterStartError": errorLabel(gated),
                 "afterStop": outcomeLabel(released)
+            ])
+
+        // What actually determines gating is when the *session* was built,
+        // not how early start() ran. A session created beforehand holds its own
+        // copied configuration; one created afterwards — an hour later or a
+        // millisecond later — is gated.
+        case "start-later":
+            let sessionBuiltBefore = URLSession(configuration: .default)
+            SimulatorNetwork.start()
+            let sessionBuiltAfter = URLSession(configuration: .default)
+
+            let before = await client.perform(sessionBuiltBefore, url: URL(string: "https://httpbin.org/get")!)
+            let after = await client.perform(sessionBuiltAfter, url: URL(string: "https://httpbin.org/get")!)
+            emit([
+                "scenario": "start-later",
+                "sessionBuiltBeforeStart": outcomeLabel(before),
+                "sessionBuiltAfterStart": outcomeLabel(after),
+                "afterError": errorLabel(after)
+            ])
+
+        // Both SimNap and the host app swizzle the same protocolClasses
+        // getter. Each must chain through the other: SimNap gates its request,
+        // and the app's own protocol still handles the one it claims.
+        case "coexistence":
+            HostAppProtocol.installSwizzle()
+            SimulatorNetwork.start()
+            let session = URLSession(configuration: .default)
+            let hostAppOutcome = await client.perform(
+                session,
+                url: URL(string: "https://\(HostAppProtocol.markerHost)/ping")!
+            )
+            let gatedOutcome = await client.perform(session, url: URL(string: "https://httpbin.org/get")!)
+            emit([
+                "scenario": "coexistence",
+                "hostAppProtocolStillRuns": HostAppProtocol.didHandleRequest,
+                "hostAppRequest": outcomeLabel(hostAppOutcome),
+                "simnapGatedRequest": outcomeLabel(gatedOutcome),
+                "stateAtStart": describe(SimulatorNetwork.state)
             ])
 
         // Reported, not asserted: URLSession.shared is built internally and may

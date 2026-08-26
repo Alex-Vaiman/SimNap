@@ -9,17 +9,22 @@ including apps that were killed while offline and just cold-launched.
 
 SimNap gates traffic at the URL Loading System, per Simulator UDID:
 
-- **Guaranteed:** `URLSession` (and Alamofire `Session`) instances built from
-  a `SimulatorNetwork`-integrated `URLSessionConfiguration`. New HTTP/HTTPS
+- **Guaranteed:** every `URLSession` — including `URLSession.shared` and
+  Alamofire `Session`s — constructed after `SimulatorNetwork.start()`, plus
+  any session built from a `configuration(from:)` result. New HTTP/HTTPS
   requests started while offline fail with the selected simulated error.
+- **Alongside your own interception:** SimNap chains through the
+  `protocolClasses` getter rather than replacing it, so an app that injects
+  its own `URLProtocol` the same way keeps working. While online SimNap
+  declines every request and yours handles its own; while offline SimNap
+  claims first, which is what simulated offline means.
 - **Already in flight:** requests admitted while online remain owned by their
   original session and are not cancelled by a later offline transition.
-- **Not controlled:** `URLSession.shared` — it is built internally and never
-  goes through the intercepted class methods, so `start()` does not reach it;
-  raw BSD sockets; `Network.framework`; third-party stacks that bypass the
-  URL Loading System; configurations obtained before `start()`; and anything
-  on a physical device (SimNap is a documented pass-through there — no
-  observers, no swizzling, no blocking).
+- **Not controlled:** raw BSD sockets, `Network.framework`, third-party
+  stacks that bypass the URL Loading System, background `URLSession`
+  configurations (Apple does not run custom `URLProtocol`s in them), and
+  anything on a physical device — SimNap is a documented pass-through there,
+  with no observers, no swizzling and no blocking.
 
 This simulates network failure at the app's transport boundary, not at the
 Mac's firewall. It does not touch CoreSimulator routing, host network
@@ -64,8 +69,13 @@ configurations that already carry the offline interceptor. Any `URLSession`
 or Alamofire `Session` your app builds from those afterwards is gated, with
 no further integration. `stop()` hands Foundation back.
 
-Order is the one thing that matters: a configuration obtained *before*
-`start()` was already copied and cannot be reached, so start early.
+`start()` can be called at any point — an hour into the process is fine. A
+`URLSession` reads `protocolClasses` off its configuration when it is
+constructed, and SimNap exchanges that getter, so any session built after
+`start()` is gated even if its configuration was created long before. A
+session that already exists keeps the copy it was built with.
+
+This reaches `URLSession.shared` as well.
 
 For a session you want gated regardless of ordering, or one built from a
 configuration you constructed yourself, integrate it explicitly:

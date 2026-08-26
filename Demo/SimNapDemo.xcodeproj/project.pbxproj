@@ -12,6 +12,7 @@
 		718559AE739E48A99BF862BC /* SimulatorNetworkCore in Frameworks */ = {isa = PBXBuildFile; productRef = 89ABF95FE9D347BB8A9A608D /* SimulatorNetworkCore */; };
 		B0D1DDF9029D4BCD8A1F3F0E /* RequestClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B7082CCF50D4816A049F65D /* RequestClient.swift */; };
 		E993B251EC804815AC2A6A9E /* ScenarioRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8941F2BD073B478BB20BABCE /* ScenarioRunner.swift */; };
+		537F974F443F46B8A36ECC2A /* HostAppProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = C301FCC20CE54A529EE12438 /* HostAppProtocol.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -20,6 +21,7 @@
 		C77DED2E329D4A6AB13F20A3 /* SimNapDemo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SimNapDemo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		7B7082CCF50D4816A049F65D /* RequestClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RequestClient.swift; sourceTree = "<group>"; };
 		8941F2BD073B478BB20BABCE /* ScenarioRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScenarioRunner.swift; sourceTree = "<group>"; };
+		C301FCC20CE54A529EE12438 /* HostAppProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostAppProtocol.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -57,6 +59,7 @@
 				293C635B7AC44A92A802B2DB /* ContentView.swift */,
 				7B7082CCF50D4816A049F65D /* RequestClient.swift */,
 				8941F2BD073B478BB20BABCE /* ScenarioRunner.swift */,
+				C301FCC20CE54A529EE12438 /* HostAppProtocol.swift */,
 			);
 			path = SimNapDemo;
 			sourceTree = "<group>";
@@ -135,6 +138,7 @@
 				7E815486992F4A5A90DCEBD8 /* ContentView.swift in Sources */,
 				B0D1DDF9029D4BCD8A1F3F0E /* RequestClient.swift in Sources */,
 				E993B251EC804815AC2A6A9E /* ScenarioRunner.swift in Sources */,
+				537F974F443F46B8A36ECC2A /* HostAppProtocol.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
