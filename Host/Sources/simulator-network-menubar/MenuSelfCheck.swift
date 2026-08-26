@@ -39,6 +39,7 @@ enum MenuSelfCheck {
         validate(menu: reused, path: "repopulated", failures: &failures, checked: &checked)
 
         validateStatusIcons(failures: &failures, checked: &checked)
+        validateVersion(failures: &failures, checked: &checked, menu: delegate.buildMenu())
 
         if failures.isEmpty {
             print("menu self-check: \(checked) items OK")
@@ -48,6 +49,27 @@ enum MenuSelfCheck {
             print("menu self-check FAILED: \(failure)")
         }
         return 1
+    }
+
+    /// The version has to be visible without clicking anything, and has to be
+    /// the same one the CLI reports — knowing which build is installed is the
+    /// point of showing it at all.
+    private static func validateVersion(failures: inout [String], checked: inout Int, menu: NSMenu) {
+        checked += 1
+        let version = SimNapVersion.current
+        if version.isEmpty || version.first(where: { $0.isNumber }) == nil {
+            failures.append("version '\(version)' does not look like a version")
+        }
+
+        checked += 1
+        if !menu.items.contains(where: { $0.title.contains(version) }) {
+            failures.append("no menu item shows version \(version); it would take a click to find out")
+        }
+
+        checked += 1
+        if !menu.items.contains(where: { $0.title == "About SimNap" }) {
+            failures.append("the About item is missing")
+        }
     }
 
     private static func validateStatusIcons(failures: inout [String], checked: inout Int) {

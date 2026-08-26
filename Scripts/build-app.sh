@@ -10,7 +10,8 @@ BUILD_DIR="$ROOT/Release"
 APP="$BUILD_DIR/SimNap.app"
 CONFIGURATION="release"
 INSTALL_DIR=""
-VERSION="1.0.1"
+VERSION_SOURCE="$ROOT/Host/Sources/SimulatorNetworkHostCore/SimNapVersion.swift"
+VERSION=$(sed -n 's/.*static let current = "\(.*\)".*/\1/p' "$VERSION_SOURCE")
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -27,6 +28,9 @@ done
 
 log() { echo "[build-app] $*"; }
 die() { echo "[build-app] FAILED: $*" >&2; exit 1; }
+
+[ -n "$VERSION" ] || die "could not read the version from $VERSION_SOURCE"
+log "Version $VERSION"
 
 log "Building $CONFIGURATION..."
 (cd "$HOST_DIR" && swift build -c "$CONFIGURATION") >/dev/null
@@ -99,6 +103,11 @@ plist_value() { /usr/libexec/PlistBuddy -c "Print :$1" "$APP/Contents/Info.plist
 # and the Dock, which looks like a broken install.
 [ "$(plist_value CFBundleIconFile)" = "AppIcon" ] || die "CFBundleIconFile is not set"
 [ -f "$APP/Contents/Resources/AppIcon.icns" ] || die "AppIcon.icns is not in the bundle"
+
+# The bundle, the CLI and the menu must all report the same version.
+[ "$(plist_value CFBundleShortVersionString)" = "$VERSION" ] || die "bundle version does not match $VERSION_SOURCE"
+[ "$("$APP/Contents/MacOS/simulator-network" --version)" = "$VERSION" ] \
+  || die "the CLI reports a different version from the bundle"
 
 EXECUTABLE_NAME=$(plist_value CFBundleExecutable)
 [ -x "$APP/Contents/MacOS/$EXECUTABLE_NAME" ] \

@@ -114,6 +114,11 @@ never guesses "the first booted Simulator." State is per-Simulator: two
 booted Simulators can hold different states at once, and every cooperating
 app inside one Simulator shares that Simulator's state.
 
+`simulator-network --version` reports the version, and it appears in
+`--help`. It is the same value the menu bar shows, read from one constant in
+`Host/Sources/SimulatorNetworkHostCore/SimNapVersion.swift` that the build
+script also reads — so the bundle, the CLI and the menu cannot drift apart.
+
 `offline` and `online` report the record they wrote, captured inside the
 writer lock, rather than re-reading afterwards — a re-read can return another
 command's write. Their `--json` output carries a `changed` field, false when
@@ -151,6 +156,9 @@ Convenience UI over the same `SimulatorNetworkHostCore` the CLI uses — lists
 booted Simulators, lets you toggle each online/offline, and copies the
 equivalent CLI command. Not required for anything; the CLI and the package
 are fully functional without it.
+
+The menu header shows the running version, so which build is installed is
+answered by opening it; "About SimNap" repeats it with a little more context.
 
 There is no manual "Refresh" item: the menu refreshes when you open it, and
 a timer keeps the status-bar icon current while it is closed. Only one

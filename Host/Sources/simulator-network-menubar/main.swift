@@ -87,7 +87,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func populate(_ menu: NSMenu) {
         menu.removeAllItems()
         menu.autoenablesItems = false
-        let headerItem = menu.addItem(withTitle: "SimNap", action: nil, keyEquivalent: "")
+        // Carries the version so "which build is installed" is answered by
+        // opening the menu, with nothing to click.
+        let headerItem = menu.addItem(withTitle: "SimNap \(SimNapVersion.current)", action: nil, keyEquivalent: "")
         headerItem.isEnabled = false
         menu.addItem(.separator())
 
@@ -139,6 +141,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        menu.addItem(withTitle: "About SimNap", action: #selector(showAbout), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Open CLI Help", action: #selector(openCLIHelp), keyEquivalent: "").target = self
         menu.addItem(.separator())
         // Quit goes through a local selector, not NSApplication.terminate:,
@@ -198,6 +201,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func quitApp() {
         NSApp.terminate(nil)
+    }
+
+    @objc private func showAbout() {
+        let alert = NSAlert()
+        alert.messageText = "SimNap \(SimNapVersion.current)"
+        alert.informativeText = """
+            Simulated offline networking for iOS Simulator apps that call \
+            SimulatorNetwork.start().
+
+            The bundled CLI reports the same version:
+            simulator-network --version
+            """
+        alert.runModal()
     }
 
     @objc private func openCLIHelp() {
