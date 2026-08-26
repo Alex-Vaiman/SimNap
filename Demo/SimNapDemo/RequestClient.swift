@@ -22,9 +22,13 @@ struct RequestClient {
     let plainSession = URLSession(configuration: .default)
 
     func perform(_ session: URLSession, url: URL) async -> RequestOutcome {
+        await perform(session, request: URLRequest(url: url))
+    }
+
+    func perform(_ session: URLSession, request: URLRequest) async -> RequestOutcome {
         let start = Date()
         do {
-            let (data, response) = try await session.data(from: url)
+            let (data, response) = try await session.data(for: request)
             let elapsed = Date().timeIntervalSince(start)
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1
             return .success(status: code, bytes: data.count, elapsed: elapsed)

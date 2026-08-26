@@ -41,13 +41,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func rebuildMenu() {
+        let menu = buildMenu()
+        statusItem.button?.title = statuses.contains { $0.state?.mode == .offline } ? "SimNap ⚠︎" : "SimNap"
+        statusItem.menu = menu
+    }
+
+    /// Builds the menu without touching the status item, so the same
+    /// construction can be validated headlessly by `--self-check`.
+    func buildMenu() -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
         let headerItem = menu.addItem(withTitle: "SimNap", action: nil, keyEquivalent: "")
         headerItem.isEnabled = false
         menu.addItem(.separator())
-
-        let anyOffline = statuses.contains { $0.state?.mode == .offline }
 
         if !hasLoadedSnapshot {
             let loadingItem = menu.addItem(withTitle: "Loading Simulators…", action: nil, keyEquivalent: "")
@@ -98,22 +104,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
         let refreshItem = menu.addItem(withTitle: "Refresh", action: #selector(refresh), keyEquivalent: "r")
+        refreshItem.target = self
         refreshItem.isEnabled = !isRefreshing && !isMutating
-        menu.addItem(withTitle: "Open CLI Help", action: #selector(openCLIHelp), keyEquivalent: "")
+        menu.addItem(withTitle: "Open CLI Help", action: #selector(openCLIHelp), keyEquivalent: "").target = self
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        // Quit goes through a local selector, not NSApplication.terminate:,
+        // because this delegate is the target and does not implement it.
+        menu.addItem(withTitle: "Quit", action: #selector(quitApp), keyEquivalent: "q").target = self
 
-        for item in menu.items {
-            item.target = self
-            item.submenu?.items.forEach { $0.target = self }
-        }
-
-        statusItem.button?.title = anyOffline ? "SimNap ⚠︎" : "SimNap"
-        statusItem.menu = menu
+        return menu
     }
 
+    /// Populates the snapshot with one healthy device and one whose status
+    /// could not be read, so `MenuSelfCheck` can validate a fully built menu.
+    func loadSelfCheckSampleStatuses() {
+        statuses = [
+            SimulatorDeviceStatus(
+                device: SimulatorDevice(udid: "SELF-CHECK-OK", name: "Self Check OK", runtime: "iOS"),
+                state: PersistedSimulatorNetworkState(generation: 1, mode: .offline, offlineError: .timedOut)
+            ),
+            SimulatorDeviceStatus(
+                device: SimulatorDevice(udid: "SELF-CHECK-BAD", name: "Self Check Unreadable", runtime: "iOS"),
+                state: nil,
+                errorDescription: "sample status failure"
+            )
+        ]
+        hasLoadedSnapshot = true
+    }
+
+    /// Targets are set per item at creation. A blanket pass over `menu.items`
+    /// would also overwrite the target AppKit manages for submenu parents and
+    /// for items with no action of ours.
     private func actionItem(title: String, udid: String, action: Selector) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
         item.representedObject = udid
         item.isEnabled = !isMutating && !isRefreshing
         return item
@@ -143,6 +167,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func refresh() {
         requestRefresh()
+    }
+
+    @objc private func quitApp() {
+        NSApp.terminate(nil)
     }
 
     @objc private func openCLIHelp() {
@@ -225,6 +253,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 MainActor.assumeIsolated {
+    if CommandLine.arguments.contains("--self-check") {
+        exit(MenuSelfCheck.run())
+    }
+
     let app = NSApplication.shared
     let delegate = AppDelegate()
     app.delegate = delegate

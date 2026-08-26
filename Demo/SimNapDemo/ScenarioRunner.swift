@@ -55,6 +55,64 @@ enum ScenarioRunner {
                 ]
             ))
 
+        // A POST with a body is the sharpest check that nothing touches online
+        // traffic: an interception layer that proxied requests would have to
+        // re-send the body itself, and `URLProtocol` loses body streams.
+        case "post-online":
+            let marker = "simnap-body-marker-42"
+            var request = URLRequest(url: URL(string: "https://httpbin.org/post")!)
+            request.httpMethod = "POST"
+            request.setValue("text/plain", forHTTPHeaderField: "Content-Type")
+            request.httpBody = Data(marker.utf8)
+            let start = Date()
+            do {
+                let (data, response) = try await client.integratedSession.data(for: request)
+                let elapsed = Date().timeIntervalSince(start)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                let echoed = (String(data: data, encoding: .utf8) ?? "").contains(marker)
+                emit([
+                    "scenario": "post-online", "outcome": "success", "status": status,
+                    "bodyEchoed": echoed, "elapsedMs": Int(elapsed * 1000)
+                ])
+            } catch {
+                emit(["scenario": "post-online", "outcome": "failure", "error": describeError(error)])
+            }
+
+        case "post-offline":
+            var request = URLRequest(url: URL(string: "https://httpbin.org/post")!)
+            request.httpMethod = "POST"
+            request.httpBody = Data("simnap-body-marker-42".utf8)
+            let outcome = await client.perform(client.integratedSession, request: request)
+            emit(payload(scenario: "post-offline", outcome: outcome, extra: [
+                "stateAtStart": describe(SimulatorNetwork.state)
+            ]))
+
+        // stop() must leave pass-through, and an explicit start() must
+        // reconcile persisted truth again even though the record is unchanged.
+        case "stop-start":
+            let beforeStop = describe(SimulatorNetwork.state)
+            SimulatorNetwork.stop()
+            let stoppedState = describe(SimulatorNetwork.state)
+            let stoppedOutcome = await client.perform(
+                client.integratedSession,
+                url: URL(string: "https://httpbin.org/get")!
+            )
+            SimulatorNetwork.start()
+            let restartedState = describe(SimulatorNetwork.state)
+            let restartedOutcome = await client.perform(
+                client.integratedSession,
+                url: URL(string: "https://httpbin.org/get")!
+            )
+            emit([
+                "scenario": "stop-start",
+                "beforeStop": beforeStop,
+                "stoppedState": stoppedState,
+                "stoppedOutcome": outcomeLabel(stoppedOutcome),
+                "restartedState": restartedState,
+                "restartedOutcome": outcomeLabel(restartedOutcome),
+                "restartedError": errorLabel(restartedOutcome)
+            ])
+
         case "headers":
             var request = URLRequest(url: URL(string: "https://httpbin.org/headers")!)
             request.setValue("scenario-marker", forHTTPHeaderField: "X-SimNap-Test")
@@ -101,22 +159,34 @@ enum ScenarioRunner {
         }
     }
 
+    /// Guards the single resume across the connection handler and the timeout.
+    private final class ResumeOnce: @unchecked Sendable {
+        private let lock = NSLock()
+        private var resumed = false
+
+        func claim() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            if resumed { return false }
+            resumed = true
+            return true
+        }
+    }
+
     private static func runNetworkFrameworkProbe() async {
         await withCheckedContinuation { continuation in
             let start = Date()
-            var resumed = false
+            let gate = ResumeOnce()
             let connection = NWConnection(host: "www.apple.com", port: 443, using: .tls)
             connection.stateUpdateHandler = { state in
-                guard !resumed else { return }
                 switch state {
                 case .ready:
-                    resumed = true
+                    guard gate.claim() else { return }
                     let elapsed = Date().timeIntervalSince(start)
                     emit(["scenario": "network-framework", "outcome": "success", "elapsedMs": Int(elapsed * 1000)])
                     connection.cancel()
                     continuation.resume()
                 case .failed(let error):
-                    resumed = true
+                    guard gate.claim() else { return }
                     emit(["scenario": "network-framework", "outcome": "failure", "error": "\(error)"])
                     connection.cancel()
                     continuation.resume()
@@ -127,8 +197,7 @@ enum ScenarioRunner {
             connection.start(queue: .main)
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
-                guard !resumed else { return }
-                resumed = true
+                guard gate.claim() else { return }
                 emit(["scenario": "network-framework", "outcome": "failure", "error": "timeout"])
                 connection.cancel()
                 continuation.resume()
@@ -151,6 +220,15 @@ enum ScenarioRunner {
             result["elapsedMs"] = Int(elapsed * 1000)
         }
         return result
+    }
+
+    private static func outcomeLabel(_ outcome: RequestOutcome) -> String {
+        outcome.isSuccess ? "success" : "failure"
+    }
+
+    private static func errorLabel(_ outcome: RequestOutcome) -> String {
+        if case .failure(let code, _) = outcome { return code }
+        return ""
     }
 
     private static func describe(_ state: SimulatorNetworkState) -> String {

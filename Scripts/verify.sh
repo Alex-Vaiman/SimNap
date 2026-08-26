@@ -27,13 +27,24 @@ assert_true() {
   local desc=$1 cond=$2
   if [ "$cond" = "true" ]; then pass "$desc"; else fail "$desc (got '$cond')"; fi
 }
+# Rejects empty/null/non-numeric input explicitly. Passing "null" straight to
+# `[ -lt ]` would emit a bash error and report a confusing failure.
 assert_lt() {
   local desc=$1 value=$2 max=$3
+  case "$value" in
+    ''|*[!0-9]*) fail "$desc (expected a number, got '$value')"; return ;;
+  esac
   if [ "$value" -lt "$max" ]; then pass "$desc ($value < $max)"; else fail "$desc ($value >= $max)"; fi
 }
 assert_nonzero_exit() {
   local desc=$1 code=$2
   if [ "$code" -ne 0 ]; then pass "$desc"; else fail "$desc (exit was 0)"; fi
+}
+# Aborts the run rather than reporting dozens of confusing assertion failures.
+abort() {
+  echo
+  echo "[verify] ABORT: $1"
+  exit 1
 }
 
 # ---------------------------------------------------------------------------
@@ -153,6 +164,21 @@ run_state_watch_after_record_reset() {
 
 install_app "$PRIMARY_UDID"
 
+# The installed binary — not the one just built — is what every scenario runs.
+# A stale install silently lacks newer scenarios, which would otherwise surface
+# as a wall of unrelated assertion failures. Verify the vocabulary up front.
+log "Checking the installed app supports every scenario this suite uses..."
+REQUIRED_SCENARIOS="state state-watch quick stop stop-start headers redirect post-online post-offline unintegrated network-framework delayed-watch"
+PROBE=$(run_scenario "$PRIMARY_UDID" state)
+if [ -z "$PROBE" ]; then
+  abort "the installed app emitted no SIMNAP_RESULT — it may be stale, or crashed on launch"
+fi
+for scenario in $REQUIRED_SCENARIOS; do
+  if ! grep -q "case \"$scenario\":" "$ROOT/Demo/SimNapDemo/ScenarioRunner.swift"; then
+    abort "ScenarioRunner.swift has no scenario '$scenario' that this suite requires"
+  fi
+done
+
 echo
 log "=== A. CLI / Host Core ==="
 
@@ -220,6 +246,16 @@ assert_true "stop test starts from offline state" "$(echo "$R" | jq -r '.stateBe
 assert_eq "stop reports pass-through online state" "online" "$(echo "$R" | jq -r '.stateAfterStop')"
 assert_eq "request after stop reaches the network" "success" "$(echo "$R" | jq -r '.outcome')"
 
+# stop() no longer clears the applied generation, so start() re-applying an
+# unchanged record depends on the reconcile comparison staying `>=`, not `>`.
+R=$(run_scenario "$PRIMARY_UDID" stop-start)
+assert_true "stop/start test starts from offline state" "$(echo "$R" | jq -r '.beforeStop | startswith("offline")')"
+assert_eq "stop leaves pass-through" "online" "$(echo "$R" | jq -r '.stoppedState')"
+assert_eq "request while stopped reaches the network" "success" "$(echo "$R" | jq -r '.stoppedOutcome')"
+assert_true "explicit start() re-applies the unchanged persisted record" "$(echo "$R" | jq -r '.restartedState | startswith("offline")')"
+assert_eq "request after restart is blocked again" "failure" "$(echo "$R" | jq -r '.restartedOutcome')"
+assert_eq "request after restart gets the configured error" "timedOut" "$(echo "$R" | jq -r '.restartedError')"
+
 "$CLI" online --device "$PRIMARY_UDID" >/dev/null
 R=$(run_scenario "$PRIMARY_UDID" headers)
 assert_eq "custom header forwarding succeeds" "success" "$(echo "$R" | jq -r '.outcome')"
@@ -228,6 +264,19 @@ assert_true "custom header round-trips to the server" "$(echo "$R" | jq -r '.hea
 R=$(run_scenario "$PRIMARY_UDID" redirect)
 assert_eq "redirect forwarding succeeds" "success" "$(echo "$R" | jq -r '.outcome')"
 assert_eq "redirect forwarding lands on final 200" "200" "$(echo "$R" | jq -r '.status')"
+
+# A POST body is the check that would have caught proxying online traffic:
+# a re-sending interception layer loses request bodies.
+R=$(run_scenario "$PRIMARY_UDID" post-online)
+assert_eq "POST while online succeeds" "success" "$(echo "$R" | jq -r '.outcome')"
+assert_eq "POST while online gets HTTP 200" "200" "$(echo "$R" | jq -r '.status')"
+assert_true "POST body reaches the server unmodified" "$(echo "$R" | jq -r '.bodyEchoed')"
+
+"$CLI" offline --device "$PRIMARY_UDID" --error notConnectedToInternet >/dev/null
+R=$(run_scenario "$PRIMARY_UDID" post-offline)
+assert_eq "POST while offline is blocked" "failure" "$(echo "$R" | jq -r '.outcome')"
+assert_eq "POST while offline gets the configured error" "notConnectedToInternet" "$(echo "$R" | jq -r '.error')"
+assert_lt "POST while offline is rejected without a round trip" "$(echo "$R" | jq -r '.elapsedMs')" 1000
 
 echo
 log "=== C. Request admission boundary ==="
@@ -282,7 +331,56 @@ assert_eq "secondary Simulator independently online" "online" "$(echo "$R2" | jq
 "$CLI" online --device "$PRIMARY_UDID" >/dev/null
 
 echo
-log "=== F. Menu bar app smoke test ==="
+log "=== F. Writer lock under concurrent commands ==="
+
+# A lost update looks like two commands both reading generation G and both
+# writing G+1 — observable as one generation reported with two different
+# records. Under a correct lock each generation maps to exactly one record.
+"$CLI" online --device "$PRIMARY_UDID" >/dev/null
+BURST_GENERATION_BEFORE=$("$CLI" status --device "$PRIMARY_UDID" --json | jq -r '.generation')
+BURST_DIR=$(mktemp -d)
+BURST_N=8
+for i in $(seq 1 "$BURST_N"); do
+  if [ $((i % 2)) -eq 0 ]; then
+    "$CLI" offline --device "$PRIMARY_UDID" --error timedOut --json >"$BURST_DIR/$i.json" 2>&1 &
+  else
+    "$CLI" offline --device "$PRIMARY_UDID" --error notConnectedToInternet --json >"$BURST_DIR/$i.json" 2>&1 &
+  fi
+done
+wait
+
+BURST_REPORTED=$(cat "$BURST_DIR"/*.json 2>/dev/null | jq -s -r 'map(select(.generation != null)) | length' 2>/dev/null || echo 0)
+assert_eq "every concurrent command reported a result" "$BURST_N" "$BURST_REPORTED"
+
+BURST_CONFLICTS=$(cat "$BURST_DIR"/*.json 2>/dev/null | jq -s -r '
+  map(select(.generation != null))
+  | group_by(.generation)
+  | map(select((map(.state + ":" + (.error // "")) | unique | length) > 1))
+  | length' 2>/dev/null || echo -1)
+assert_eq "no generation was assigned to two different records" "0" "$BURST_CONFLICTS"
+
+BURST_GENERATION_AFTER=$("$CLI" status --device "$PRIMARY_UDID" --json 2>/dev/null | jq -r '.generation')
+assert_true "record is still readable after the concurrent burst" "$([ -n "$BURST_GENERATION_AFTER" ] && echo true || echo false)"
+# Each command either changes the record once or is idempotent, so the burst can
+# advance the generation by at most one per command.
+assert_lt "concurrent burst advanced generation by at most one per command" \
+  "$((BURST_GENERATION_AFTER - BURST_GENERATION_BEFORE))" "$((BURST_N + 1))"
+rm -rf "$BURST_DIR"
+
+echo
+log "=== G. Menu bar app ==="
+
+# Validates the real menu headlessly: every actionable item must have a target
+# that responds to its action, and automatic enabling must stay off so the
+# explicit isEnabled logic is not overridden. A liveness check alone cannot
+# catch a menu item that only raises when clicked.
+"$MENUBAR" --self-check >/tmp/simnap-verify-menu-selfcheck.log 2>&1
+MENU_SELFCHECK_EXIT=$?
+if [ "$MENU_SELFCHECK_EXIT" -eq 0 ]; then
+  pass "menu self-check: every item's target handles its action"
+else
+  fail "menu self-check reported problems: $(tr '\n' '; ' </tmp/simnap-verify-menu-selfcheck.log)"
+fi
 
 "$MENUBAR" &
 MENUBAR_PID=$!

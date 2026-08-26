@@ -119,12 +119,29 @@ xcodebuild -project Demo/SimNapDemo.xcodeproj -scheme SimNapDemo \
 Builds the root package, the Host package, and the demo app for real, then
 drives real `simctl`/CLI processes against a real booted Simulator — no
 mocks. It boots a second, disposable Simulator for the isolation check and
-deletes it afterward. Covers: CLI behavior and generation ordering, the cold
-launch guarantee, both simulated error modes, the documented boundary
-(already-running requests, unintegrated `URLSession`, and raw
-`Network.framework` traffic staying unaffected), per-Simulator isolation,
-and a menu bar crash smoke test. Requires exactly one Simulator already
-booted and `jq` installed.
+deletes it afterward. Requires exactly one Simulator already booted and `jq`
+installed.
+
+Covers:
+
+- CLI behavior, generation ordering, idempotent re-application, corrupt-record
+  repair, and a running app accepting a new record epoch.
+- The cold-launch guarantee and both simulated error modes.
+- `stop()` leaving pass-through, and an explicit `start()` re-applying the
+  persisted record.
+- Header, redirect, and **POST body** round-trips while online. The body check
+  is the one that fails loudest if anything ever proxies online traffic again:
+  a dropped body still returns HTTP 200, so status alone proves nothing.
+- The documented boundary — already-running requests, unintegrated
+  `URLSession`, and raw `Network.framework` traffic staying unaffected.
+- Per-Simulator isolation.
+- The per-Simulator writer lock under a concurrent command burst: no
+  generation may map to two different records.
+- A headless menu self-check (`simulator-network-menubar --self-check`)
+  asserting every actionable menu item has a target that responds to its
+  action, and that automatic enabling stays off. A menu is otherwise only
+  exercised by clicking it, so a mis-targeted item raises
+  `unrecognized selector` in the user's face and nothing catches it.
 
 The demo app's `ScenarioRunner` (`Demo/SimNapDemo/ScenarioRunner.swift`) is
 what makes this possible headlessly: set `SIMNAP_SCENARIO` in its
