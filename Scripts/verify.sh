@@ -13,11 +13,16 @@ STATE_KEY="com.simnap.simulator-network.state"
 
 PASS=0
 FAIL=0
+SKIP=0
 declare -a FAILURES=()
+declare -a SKIPPED=()
 
 log()  { echo "[verify] $*"; }
 pass() { PASS=$((PASS + 1)); echo "  PASS  $1"; }
 fail() { FAIL=$((FAIL + 1)); FAILURES+=("$1"); echo "  FAIL  $1"; }
+# Counted and listed in the summary. A check that did not run must never be
+# mistaken for one that passed.
+skip() { SKIP=$((SKIP + 1)); SKIPPED+=("$1"); echo "  SKIP  $1"; }
 
 assert_eq() {
   local desc=$1 expected=$2 actual=$3
@@ -63,11 +68,35 @@ if ! (cd "$HOST_DIR" && swift build) >/tmp/simnap-verify-host-build.log 2>&1; th
   log "host package build failed — aborting"
   exit 1
 fi
-CLI="$HOST_DIR/.build/debug/simulator-network"
+CLI="$HOST_DIR/.build/debug/simnap"
 MENUBAR="$HOST_DIR/.build/debug/simulator-network-menubar"
+# Without this, a renamed or missing binary shows up as dozens of unrelated
+# assertion failures instead of the one thing that is actually wrong.
+[ -x "$CLI" ] || abort "CLI not found at $CLI"
+[ -x "$MENUBAR" ] || abort "menu bar binary not found at $MENUBAR"
+
+# This suite's own scratch Simulator, from a run that ended before cleanup.
+# Left in place it gets picked as the primary below, and then section E looks
+# it up by name and drives both "Simulators" against one device.
+for stale in $(xcrun simctl list devices -j | jq -r --arg n "$SECOND_SIM_NAME" \
+    '.devices | to_entries[] | .value[] | select(.name==$n) | .udid'); do
+  log "Removing a leftover $SECOND_SIM_NAME ($stale)"
+  xcrun simctl shutdown "$stale" >/dev/null 2>&1 || true
+  xcrun simctl delete "$stale" >/dev/null 2>&1 || true
+done
+
+SECOND_UDID=""
+remove_scratch_simulator() {
+  [ -n "$SECOND_UDID" ] || return 0
+  xcrun simctl shutdown "$SECOND_UDID" >/dev/null 2>&1 || true
+  xcrun simctl delete "$SECOND_UDID" >/dev/null 2>&1 || true
+}
+# On EXIT, so an abort or a failure cannot leave one behind for the next run.
+trap remove_scratch_simulator EXIT
 
 log "Booting/selecting primary Simulator..."
-PRIMARY_UDID=$(xcrun simctl list devices booted -j | jq -r '.devices | to_entries[] | .value[] | select(.state=="Booted") | .udid' | head -1)
+PRIMARY_UDID=$(xcrun simctl list devices booted -j | jq -r --arg n "$SECOND_SIM_NAME" \
+  '.devices | to_entries[] | .value[] | select(.state=="Booted") | select(.name != $n) | .udid' | head -1)
 if [ -z "$PRIMARY_UDID" ]; then
   log "No booted Simulator found — boot one first (e.g. via Xcode or \`xcrun simctl boot <udid>\`)"
   exit 1
@@ -383,11 +412,11 @@ assert_eq "raw Network.framework traffic is NOT gated (succeeds while offline)" 
 echo
 log "=== E. Simulator isolation ==="
 
-SECOND_UDID=$(xcrun simctl list devices -j | jq -r --arg n "$SECOND_SIM_NAME" '.devices | to_entries[] | .value[] | select(.name==$n) | .udid' | head -1)
-if [ -z "$SECOND_UDID" ]; then
-  RUNTIME=$(xcrun simctl list runtimes -j | jq -r '.runtimes | map(select(.isAvailable)) | .[0].identifier')
-  SECOND_UDID=$(xcrun simctl create "$SECOND_SIM_NAME" "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" "$RUNTIME")
-fi
+RUNTIME=$(xcrun simctl list runtimes -j | jq -r '.runtimes | map(select(.isAvailable)) | .[0].identifier')
+SECOND_UDID=$(xcrun simctl create "$SECOND_SIM_NAME" "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" "$RUNTIME")
+# Isolation between two Simulators means nothing if both names resolve to one.
+[ -n "$SECOND_UDID" ] || abort "could not create $SECOND_SIM_NAME"
+[ "$SECOND_UDID" != "$PRIMARY_UDID" ] || abort "the second Simulator resolved to the primary ($PRIMARY_UDID)"
 xcrun simctl boot "$SECOND_UDID" >/dev/null 2>&1 || true
 xcrun simctl bootstatus "$SECOND_UDID" -b >/dev/null 2>&1
 install_app "$SECOND_UDID"
@@ -473,11 +502,17 @@ if kill -0 "$MENUBAR_PID" 2>/dev/null; then
   pass "menu bar app stays alive after launch (no crash)"
 elif grep -q "already running" /tmp/simnap-verify-menubar.log 2>/dev/null; then
   # An installed copy in the developer's own menu bar holds the instance lock,
-  # so every check below would report a broken app. Say what is actually wrong.
-  abort "a SimNap menu bar instance is already running — quit it before running this suite"
+  # which is the feature working. Everything else in the suite is still worth
+  # running, so this costs the menu bar checks rather than the whole run.
+  MENUBAR_BLOCKED=1
+  skip "menu bar checks: an instance is already running (quit SimNap to include them)"
 else
   fail "menu bar app crashed or exited immediately"
 fi
+
+if [ "${MENUBAR_BLOCKED:-0}" -eq 1 ]; then
+  skip "second-instance refusal, its message, self-check alongside a live instance, lock release"
+else
 
 # A second copy would add an indistinguishable second status item and double
 # the simctl polling load.
@@ -502,6 +537,7 @@ else
   fail "instance lock outlived the process — a new instance could not start"
 fi
 kill "$MENUBAR_PID_2" 2>/dev/null || true
+fi
 
 echo
 log "=== H. Application bundle ==="
@@ -530,14 +566,22 @@ rm -rf "$ALT_TMPDIR"
 
 echo
 log "=== Cleanup ==="
-xcrun simctl shutdown "$SECOND_UDID" >/dev/null 2>&1 || true
-xcrun simctl delete "$SECOND_UDID" >/dev/null 2>&1 || true
+remove_scratch_simulator
+SECOND_UDID=""
 log "Deleted temporary Simulator '$SECOND_SIM_NAME'"
 
 echo
 echo "============================================================"
-echo " $PASS passed, $FAIL failed"
+if [ "$SKIP" -gt 0 ]; then
+  echo " $PASS passed, $FAIL failed, $SKIP skipped"
+else
+  echo " $PASS passed, $FAIL failed"
+fi
 echo "============================================================"
+if [ "$SKIP" -gt 0 ]; then
+  echo "Skipped:"
+  for entry in "${SKIPPED[@]}"; do echo "  - $entry"; done
+fi
 if [ "$FAIL" -gt 0 ]; then
   echo "Failures:"
   for f in "${FAILURES[@]}"; do echo "  - $f"; done

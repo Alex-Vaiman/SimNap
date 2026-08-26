@@ -33,6 +33,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Bumped by every mutation, so a refresh that started earlier can tell
     /// that its snapshot is stale and drop it.
     private var refreshEpoch = 0
+    /// Items must not be removed while the menu is on screen: the one the
+    /// user is about to click would be detached from its menu and the click
+    /// would do nothing. That is why "Copy CLI Command" silently failed.
+    private var isMenuOpen = false
+    private var needsRebuildWhenClosed = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -53,12 +58,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Refreshing when the menu opens is what makes a manual "Refresh" item
     /// unnecessary: what you see is fetched because you looked at it.
     func menuWillOpen(_ menu: NSMenu) {
+        isMenuOpen = true
         requestRefresh()
     }
 
+    func menuDidClose(_ menu: NSMenu) {
+        isMenuOpen = false
+        if needsRebuildWhenClosed {
+            needsRebuildWhenClosed = false
+            rebuildMenu()
+        }
+    }
+
     private func rebuildMenu() {
-        populate(menu)
+        // The icon is outside the menu and always safe to update.
         applyStatusIcon()
+        guard !isMenuOpen else {
+            // Refresh the labels the user is looking at without touching the
+            // items themselves, and do the structural rebuild once it closes.
+            needsRebuildWhenClosed = true
+            updateTitlesInPlace()
+            return
+        }
+        populate(menu)
+    }
+
+    /// Retitles the existing device rows. Adds and removes nothing, so every
+    /// item the user can currently click stays attached to its menu.
+    private func updateTitlesInPlace() {
+        for entry in statuses {
+            guard let item = menu.items.first(where: {
+                ($0.submenu?.items.first?.representedObject as? String) == entry.device.udid
+            }) else { continue }
+            item.title = "\(entry.device.name) — \(Self.stateTitle(for: entry))"
+        }
+    }
+
+    private static func stateTitle(for entry: SimulatorDeviceStatus) -> String {
+        guard let state = entry.state else { return "Status Unavailable" }
+        return state.mode == .offline ? "Offline" : "Online"
     }
 
     private func applyStatusIcon() {
@@ -106,13 +144,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         for entry in statuses {
             let device = entry.device
-            let stateTitle: String
-            if let state = entry.state {
-                stateTitle = state.mode == .offline ? "Offline" : "Online"
-            } else {
-                stateTitle = "Status Unavailable"
-            }
-            let item = NSMenuItem(title: "\(device.name) — \(stateTitle)", action: nil, keyEquivalent: "")
+            let item = NSMenuItem(
+                title: "\(device.name) — \(Self.stateTitle(for: entry))",
+                action: nil,
+                keyEquivalent: ""
+            )
             let submenu = NSMenu()
             submenu.autoenablesItems = false
             if let errorDescription = entry.errorDescription {
@@ -200,7 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let udid = sender.representedObject as? String else { return }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString("simulator-network offline --device \(udid)", forType: .string)
+        pasteboard.setString("simnap offline --device \(udid)", forType: .string)
     }
 
     @objc private func quitApp() {
@@ -215,7 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             SimulatorNetwork.start().
 
             The bundled CLI reports the same version:
-            simulator-network --version
+            simnap --version
             """
         alert.runModal()
     }
@@ -223,7 +259,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func openCLIHelp() {
         let alert = NSAlert()
         alert.messageText = "SimNap CLI"
-        alert.informativeText = "Run `simulator-network --help` in Terminal."
+        alert.informativeText = "Run `simnap --help` in Terminal."
         alert.runModal()
     }
 

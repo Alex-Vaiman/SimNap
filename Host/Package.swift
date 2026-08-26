@@ -8,7 +8,7 @@ let package = Package(
     ],
     products: [
         .library(name: "SimulatorNetworkHostCore", targets: ["SimulatorNetworkHostCore"]),
-        .executable(name: "simulator-network", targets: ["simulator-network"]),
+        .executable(name: "simnap", targets: ["simnap"]),
         .executable(name: "simulator-network-menubar", targets: ["simulator-network-menubar"])
     ],
     dependencies: [
@@ -23,7 +23,7 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "simulator-network",
+            name: "simnap",
             dependencies: [
                 "SimulatorNetworkHostCore",
                 .product(name: "SimulatorNetworkCore", package: "SimNap"),

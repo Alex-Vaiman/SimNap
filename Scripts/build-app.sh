@@ -36,7 +36,7 @@ log "Building $CONFIGURATION..."
 (cd "$HOST_DIR" && swift build -c "$CONFIGURATION") >/dev/null
 BIN_DIR="$HOST_DIR/.build/$CONFIGURATION"
 [ -x "$BIN_DIR/simulator-network-menubar" ] || die "menu bar binary missing"
-[ -x "$BIN_DIR/simulator-network" ] || die "CLI binary missing"
+[ -x "$BIN_DIR/simnap" ] || die "CLI binary missing"
 
 log "Assembling $APP..."
 rm -rf "$APP"
@@ -44,9 +44,14 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 # CFBundleExecutable must match this name exactly or launchd cannot start it.
 cp "$BIN_DIR/simulator-network-menubar" "$APP/Contents/MacOS/SimNap"
-# Bundled alongside so the app is self-contained and the CLI it points users
-# to can be put on PATH from a known location.
-cp "$BIN_DIR/simulator-network" "$APP/Contents/MacOS/simulator-network"
+# Bundled alongside so the app is self-contained and the CLI can be linked
+# onto PATH from a known location.
+#
+# Deliberately NOT named "simnap": macOS filesystems are case-insensitive by
+# default, so it would be the same file as the "SimNap" app executable above.
+# One would overwrite the other and the symlink on PATH would resolve to the
+# menu bar app. The name on PATH comes from the symlink, not from this file.
+cp "$BIN_DIR/simnap" "$APP/Contents/MacOS/simnap-cli"
 
 # Committed rather than generated here, so building does not depend on
 # re-rendering it. Regenerate with: swift Scripts/make-icon.swift
@@ -82,7 +87,7 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 # Ad-hoc signature. Unsigned bundles are refused outright on Apple silicon.
 # Nested binaries are signed before the bundle; --deep is deprecated.
 log "Signing (ad-hoc)..."
-codesign --force --sign - --timestamp=none "$APP/Contents/MacOS/simulator-network" >/dev/null 2>&1
+codesign --force --sign - --timestamp=none "$APP/Contents/MacOS/simnap-cli" >/dev/null 2>&1
 codesign --force --sign - --timestamp=none "$APP/Contents/MacOS/SimNap" >/dev/null 2>&1
 codesign --force --sign - --timestamp=none "$APP" >/dev/null 2>&1
 
@@ -106,8 +111,14 @@ plist_value() { /usr/libexec/PlistBuddy -c "Print :$1" "$APP/Contents/Info.plist
 
 # The bundle, the CLI and the menu must all report the same version.
 [ "$(plist_value CFBundleShortVersionString)" = "$VERSION" ] || die "bundle version does not match $VERSION_SOURCE"
-[ "$("$APP/Contents/MacOS/simulator-network" --version)" = "$VERSION" ] \
+[ "$("$APP/Contents/MacOS/simnap-cli" --version)" = "$VERSION" ] \
   || die "the CLI reports a different version from the bundle"
+
+# Case-insensitively equal names inside Contents/MacOS silently collapse into
+# one file on a default macOS volume.
+if [ "$(ls "$APP/Contents/MacOS" | tr 'A-Z' 'a-z' | sort | uniq -d)" != "" ]; then
+  die "two executables in Contents/MacOS differ only by case"
+fi
 
 EXECUTABLE_NAME=$(plist_value CFBundleExecutable)
 [ -x "$APP/Contents/MacOS/$EXECUTABLE_NAME" ] \
@@ -119,7 +130,7 @@ codesign --verify --strict "$APP" || die "signature does not verify"
 # environment, the way launchd starts a Finder-launched app.
 env -i "$APP/Contents/MacOS/$EXECUTABLE_NAME" --self-check >/dev/null \
   || die "bundled executable failed its self-check under an empty environment"
-env -i "$APP/Contents/MacOS/simulator-network" devices >/dev/null \
+env -i "$APP/Contents/MacOS/simnap-cli" devices >/dev/null \
   || die "bundled CLI could not reach simctl under an empty environment"
 
 log "Bundle OK: $APP"
@@ -127,15 +138,68 @@ log "Bundle OK: $APP"
 if [ -n "$INSTALL_DIR" ]; then
   DEST="$INSTALL_DIR/SimNap.app"
   log "Installing to $DEST..."
-  pkill -f "$DEST/Contents/MacOS/SimNap" 2>/dev/null || true
+  # pkill only sends the signal. Replacing the bundle before the process has
+  # actually gone leaves the old build running against a deleted bundle, and a
+  # survivor keeps the single-instance lock so the new copy refuses to launch.
+  WAS_RUNNING=0
+  if pgrep -f "$DEST/Contents/MacOS/SimNap" >/dev/null 2>&1; then
+    WAS_RUNNING=1
+    log "Stopping the running copy..."
+    pkill -f "$DEST/Contents/MacOS/SimNap" 2>/dev/null || true
+    for _ in $(seq 1 20); do
+      pgrep -f "$DEST/Contents/MacOS/SimNap" >/dev/null 2>&1 || break
+      sleep 0.25
+    done
+    if pgrep -f "$DEST/Contents/MacOS/SimNap" >/dev/null 2>&1; then
+      pkill -9 -f "$DEST/Contents/MacOS/SimNap" 2>/dev/null || true
+      sleep 0.5
+    fi
+    pgrep -f "$DEST/Contents/MacOS/SimNap" >/dev/null 2>&1 \
+      && die "the running copy would not exit; quit SimNap and re-run"
+  fi
+
   rm -rf "$DEST"
   mkdir -p "$INSTALL_DIR"
   cp -R "$APP" "$DEST"
-  log "Installed. Launch it from Spotlight or: open -a SimNap"
+  log "Installed."
+
+  # A dev instance from a checkout holds the same lock. Say so rather than
+  # letting the relaunch fail for a reason that looks unrelated.
+  if pgrep -f "simulator-network-menubar" >/dev/null 2>&1; then
+    log "Another SimNap instance is running from a checkout; quit it to use this one."
+  elif [ "$WAS_RUNNING" -eq 1 ]; then
+    # It was running before, so put it back rather than leaving the menu bar
+    # empty and the update looking like it did nothing.
+    open -a "$DEST" && sleep 2
+    if pgrep -f "$DEST/Contents/MacOS/SimNap" >/dev/null 2>&1; then
+      log "Relaunched SimNap $VERSION"
+    else
+      log "Installed, but SimNap did not relaunch; open it from Spotlight."
+    fi
+  else
+    log "Launch it from Spotlight or: open -a SimNap"
+  fi
+
+  # Actually put the CLI on PATH. Printing the command is not installing it.
+  # Uses the first writable directory already on PATH, so this needs no sudo
+  # and changes nothing about the user's shell configuration.
+  CLI_TARGET="$DEST/Contents/MacOS/simnap-cli"
+  CLI_LINK=""
+  IFS=':' read -r -a PATH_PARTS <<< "$PATH"
+  for candidate in "${PATH_PARTS[@]}"; do
+    [ -d "$candidate" ] && [ -w "$candidate" ] || continue
+    CLI_LINK="$candidate/simnap"
+    break
+  done
+
+  if [ -n "$CLI_LINK" ]; then
+    ln -sf "$CLI_TARGET" "$CLI_LINK"
+    [ "$("$CLI_LINK" --version)" = "$VERSION" ] || die "the CLI installed at $CLI_LINK does not run"
+    log "CLI installed: $CLI_LINK -> simnap $VERSION"
+  else
+    log "No writable directory on PATH. Install the CLI with:"
+    log "  sudo ln -sf \"$CLI_TARGET\" /usr/local/bin/simnap"
+  fi
 else
   log "Not installed. Re-run with --install (or --install-to <dir>)."
 fi
-
-echo
-echo "To put the CLI on PATH:"
-echo "  ln -sf \"${INSTALL_DIR:-$BUILD_DIR}/SimNap.app/Contents/MacOS/simulator-network\" /usr/local/bin/simulator-network"

@@ -6,7 +6,7 @@ import SimulatorNetworkHostCore
 @main
 struct SimulatorNetworkCLI: ParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "simulator-network",
+        commandName: "simnap",
         abstract: "Deterministic application-level network control for cooperating iOS Simulator apps.",
         version: SimNapVersion.current,
         subcommands: [Offline.self, Online.self, Status.self, Devices.self]

@@ -45,7 +45,7 @@ macOS-only code.
   shared model types.
   - `SimulatorNetworkHostCore` — Simulator discovery, per-Simulator
     locking, persisted-state read/write, the Darwin wake-up.
-  - `simulator-network` — the CLI.
+  - `simnap` — the CLI.
   - `simulator-network-menubar` — an optional macOS status-bar app.
 - **`Demo/SimNapDemo`** — a throwaway iOS app exercising the root package
   end to end. References the root package locally, same as any consumer
@@ -103,10 +103,10 @@ package regardless of whether anything observes `states`.
 ```bash
 cd Host
 swift build
-.build/debug/simulator-network devices
-.build/debug/simulator-network offline --device <UDID> --error timedOut
-.build/debug/simulator-network online  --device <UDID>
-.build/debug/simulator-network status  --device <UDID> --json
+.build/debug/simnap devices
+.build/debug/simnap offline --device <UDID> --error timedOut
+.build/debug/simnap online  --device <UDID>
+.build/debug/simnap status  --device <UDID> --json
 ```
 
 `offline`/`online`/`status` all require an explicit `--device` UDID — SimNap
@@ -114,7 +114,7 @@ never guesses "the first booted Simulator." State is per-Simulator: two
 booted Simulators can hold different states at once, and every cooperating
 app inside one Simulator shares that Simulator's state.
 
-`simulator-network --version` reports the version, and it appears in
+`simnap --version` reports the version, and it appears in
 `--help`. It is the same value the menu bar shows, read from one constant in
 `Host/Sources/SimulatorNetworkHostCore/SimNapVersion.swift` that the build
 script also reads — so the bundle, the CLI and the menu cannot drift apart.
@@ -145,8 +145,13 @@ Dock icon), ad-hoc signs it, validates the bundle, and copies it to
 Its icon is `Resources/AppIcon.icns`, committed rather than generated at build
 time; regenerate it with `swift Scripts/make-icon.swift`.
 Without `--install` it only builds into `Release/` (git-ignored). The CLI is bundled
-inside at `Contents/MacOS/simulator-network`; the script prints the `ln -s`
-to put it on your `PATH`.
+inside at `Contents/MacOS/simnap-cli` and symlinked onto the first writable
+directory already on your `PATH`, so `simnap` just works afterwards with no
+sudo and no shell configuration to edit.
+
+The bundled file is not called `simnap`: macOS filesystems are
+case-insensitive by default, so it would be the same file as the `SimNap` app
+executable beside it. The command name comes from the symlink.
 
 A checkout run and an installed copy exclude each other — the instance lock
 lives under `~/Library/Caches`, not in `TMPDIR`, which is launch-context
