@@ -188,7 +188,7 @@ install_app "$PRIMARY_UDID"
 # instead would pass happily against a stale install that still answers `state`
 # but knows nothing of, say, `stop-start`.
 log "Checking the installed app supports every scenario this suite uses..."
-REQUIRED_SCENARIOS="state state-watch quick stop stop-start headers redirect post-online post-offline start-only start-later coexistence shared-session unintegrated network-framework delayed-watch"
+REQUIRED_SCENARIOS="state state-watch quick stop stop-start headers redirect post-online post-offline start-only start-later coexistence coexistence-reversed shared-session unintegrated network-framework delayed-watch"
 CAPABILITIES=$(run_scenario "$PRIMARY_UDID" capabilities)
 if [ -z "$CAPABILITIES" ]; then
   abort "the installed app emitted no SIMNAP_RESULT for 'capabilities' — it is stale or crashed on launch"
@@ -349,6 +349,17 @@ assert_eq "ordinary traffic is untouched while online" "success" "$(echo "$R" | 
 R=$(run_scenario "$PRIMARY_UDID" coexistence)
 assert_eq "while offline SimNap claims the request first, as simulated offline should" "failure" "$(echo "$R" | jq -r '.hostAppRequest')"
 
+# The opposite installation order, which is the one a host app actually
+# produces: SimNap swizzles at launch, the app's own swizzle lands on top.
+# Undoing an exchange in that state restores the original getter and takes the
+# app's interception with it, so stop() must not undo it at all.
+"$CLI" online --device "$PRIMARY_UDID" >/dev/null
+R=$(run_scenario "$PRIMARY_UDID" coexistence-reversed)
+assert_true "app swizzle installed after SimNap works" "$(echo "$R" | jq -r '.hostHandledBeforeStop')"
+assert_true "and still works after SimulatorNetwork.stop()" "$(echo "$R" | jq -r '.hostHandledAfterStop')"
+assert_eq "its request still succeeds after stop()" "success" "$(echo "$R" | jq -r '.hostRequestAfterStop')"
+"$CLI" offline --device "$PRIMARY_UDID" --error timedOut >/dev/null
+
 echo
 log "=== D. Documented boundary ==="
 
@@ -383,6 +394,14 @@ install_app "$SECOND_UDID"
 
 "$CLI" offline --device "$PRIMARY_UDID" --error timedOut >/dev/null
 "$CLI" online --device "$SECOND_UDID" >/dev/null
+
+# Asserted from both sides on purpose. This check has been seen to fail
+# intermittently while the second Simulator boots, and splitting it says which
+# side disagreed: the persisted record, or what a fresh app process read.
+assert_eq "primary record says offline" "offline" \
+  "$("$CLI" status --device "$PRIMARY_UDID" --json | jq -r '.state')"
+assert_eq "secondary record says online" "online" \
+  "$("$CLI" status --device "$SECOND_UDID" --json | jq -r '.state')"
 
 assert_eq "primary Simulator independently offline" "offline:timedOut" \
   "$(app_state_settling_to "$PRIMARY_UDID" "offline:timedOut")"
@@ -447,11 +466,15 @@ else
   fail "menu self-check reported problems: $(tr '\n' '; ' </tmp/simnap-verify-menu-selfcheck.log)"
 fi
 
-"$MENUBAR" &
+"$MENUBAR" >/tmp/simnap-verify-menubar.log 2>&1 &
 MENUBAR_PID=$!
 sleep 2
 if kill -0 "$MENUBAR_PID" 2>/dev/null; then
   pass "menu bar app stays alive after launch (no crash)"
+elif grep -q "already running" /tmp/simnap-verify-menubar.log 2>/dev/null; then
+  # An installed copy in the developer's own menu bar holds the instance lock,
+  # so every check below would report a broken app. Say what is actually wrong.
+  abort "a SimNap menu bar instance is already running — quit it before running this suite"
 else
   fail "menu bar app crashed or exited immediately"
 fi

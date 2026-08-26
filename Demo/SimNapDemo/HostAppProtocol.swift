@@ -15,6 +15,8 @@ final class HostAppProtocol: URLProtocol, @unchecked Sendable {
     /// is still in the chain.
     static private(set) var didHandleRequest = false
 
+    static func resetHandledFlag() { didHandleRequest = false }
+
     override class func canInit(with request: URLRequest) -> Bool {
         guard URLProtocol.property(forKey: handledKey, in: request) == nil else { return false }
         return request.url?.host?.contains(markerHost) == true

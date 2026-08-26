@@ -60,11 +60,10 @@ final class Runtime: @unchecked Sendable {
         }
     }
 
+    /// Disables the gate. The `protocolClasses` hook stays installed on
+    /// purpose — see `ConfigurationInterception` — and the protocol declines
+    /// every request while the runtime is disabled, so it is inert.
     func stop() {
-        // Before the state teardown, so no further gated configurations are
-        // handed out while stopping.
-        ConfigurationInterception.uninstall()
-
         queue.sync {
             guard started else { return }
 

@@ -23,7 +23,7 @@ enum ScenarioRunner {
     /// against a stale install.
     private static let supportedScenarios = [
         "capabilities", "state", "state-watch", "quick", "stop", "stop-start",
-        "post-online", "post-offline", "start-only", "start-later", "coexistence", "shared-session", "headers", "redirect", "unintegrated",
+        "post-online", "post-offline", "start-only", "start-later", "coexistence", "coexistence-reversed", "shared-session", "headers", "redirect", "unintegrated",
         "network-framework", "delayed-watch"
     ]
 
@@ -185,6 +185,29 @@ enum ScenarioRunner {
                 "hostAppRequest": outcomeLabel(hostAppOutcome),
                 "simnapGatedRequest": outcomeLabel(gatedOutcome),
                 "stateAtStart": describe(SimulatorNetwork.state)
+            ])
+
+        // The other installation order, which is the real one in Bringoz:
+        // SimNap swizzles first, the app's own swizzle lands on top. stop()
+        // must not take the app's interception down with it.
+        case "coexistence-reversed":
+            SimulatorNetwork.start()
+            HostAppProtocol.installSwizzle()
+            let markerURL = URL(string: "https://\(HostAppProtocol.markerHost)/ping")!
+
+            let beforeStop = await client.perform(URLSession(configuration: .default), url: markerURL)
+            let handledBeforeStop = HostAppProtocol.didHandleRequest
+
+            HostAppProtocol.resetHandledFlag()
+            SimulatorNetwork.stop()
+            let afterStop = await client.perform(URLSession(configuration: .default), url: markerURL)
+
+            emit([
+                "scenario": "coexistence-reversed",
+                "hostHandledBeforeStop": handledBeforeStop,
+                "hostRequestBeforeStop": outcomeLabel(beforeStop),
+                "hostHandledAfterStop": HostAppProtocol.didHandleRequest,
+                "hostRequestAfterStop": outcomeLabel(afterStop)
             ])
 
         // Reported, not asserted: URLSession.shared is built internally and may

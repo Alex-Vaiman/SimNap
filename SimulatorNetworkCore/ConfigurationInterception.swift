@@ -14,6 +14,14 @@ import Foundation
 /// This only ever *adds* coverage. `configuration(from:)` is untouched, and
 /// the getter filters this protocol out before re-inserting it, so an
 /// explicitly integrated configuration cannot end up with it twice.
+///
+/// Installed once per process and never reversed. Exchanging back is not safe
+/// when someone else swizzled the same getter afterwards: the host
+/// application's implementation is by then the one reachable through this
+/// selector, and undoing the exchange restores the original getter — silently
+/// taking that application's own `URLProtocol` out of the chain with it.
+/// `stop()` therefore disables the gate rather than removing the hook, which
+/// makes the protocol decline every request and leaves it inert.
 enum ConfigurationInterception {
     private static let lock = NSLock()
     private static var isInstalled = false
@@ -24,17 +32,6 @@ enum ConfigurationInterception {
         guard !isInstalled, exchangeProtocolClassesGetter() else { return }
         URLProtocol.registerClass(SimulatorURLProtocol.self)
         isInstalled = true
-        #endif
-    }
-
-    static func uninstall() {
-        #if targetEnvironment(simulator)
-        lock.lock(); defer { lock.unlock() }
-        guard isInstalled else { return }
-        URLProtocol.unregisterClass(SimulatorURLProtocol.self)
-        // Exchanging a second time restores the previous implementation.
-        _ = exchangeProtocolClassesGetter()
-        isInstalled = false
         #endif
     }
 
