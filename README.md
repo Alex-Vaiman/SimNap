@@ -127,9 +127,15 @@ instance runs at a time — a second launch exits with a message rather than
 adding a second, indistinguishable status item.
 
 The status-bar icon is an SF Symbol with one glyph per aggregate state:
-`wifi` when every booted Simulator is online, `wifi.slash` when at least one
-is simulated offline, and `wifi.exclamationmark` when a status could not be
-read — an unknown status is never reported as a confident "all online". The
+`network` when every booted Simulator is online, `network.slash` when at
+least one is simulated offline, and `questionmark.circle` while the status is
+unknown. The `wifi` family is deliberately avoided — the system's own network
+indicator uses it, and sharing the shape made SimNap read as a second system
+indicator. Tinting cannot separate them, since a template image is recoloured
+by the menu bar by definition.
+
+An unknown status is never shown as a confident "all online" — that includes
+the second or two after every launch, before the first snapshot returns. The
 tooltip spells the state out.
 
 ## Demo app

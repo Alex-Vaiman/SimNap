@@ -16,9 +16,20 @@ enum StatusIcon: CaseIterable {
     /// A status could not be read, so what is shown may be stale or wrong.
     case warning
 
-    /// A failed read outranks the states derived from it: reporting "all
+    /// An unknown status outranks the states derived from it: reporting "all
     /// online" while a status is unknown would be a confident lie.
-    static func resolve(statuses: [SimulatorDeviceStatus], refreshError: String?) -> StatusIcon {
+    ///
+    /// `hasLoadedSnapshot` is the startup case and matters as much as a failed
+    /// read. The first snapshot costs one `simctl` call per booted Simulator,
+    /// so for a second or two after every launch nothing is known yet — and an
+    /// indicator whose job is to catch the eye must not spend that window
+    /// reassuring instead.
+    static func resolve(
+        statuses: [SimulatorDeviceStatus],
+        refreshError: String?,
+        hasLoadedSnapshot: Bool
+    ) -> StatusIcon {
+        guard hasLoadedSnapshot else { return .warning }
         if refreshError != nil || statuses.contains(where: { $0.state == nil }) {
             return .warning
         }
@@ -28,11 +39,20 @@ enum StatusIcon: CaseIterable {
         return .neutral
     }
 
+    /// Deliberately not the `wifi` family. The system's own network indicator
+    /// is a Wi-Fi glyph, and SimNap sitting beside it with the same shape read
+    /// as a second system indicator rather than as this app. A tint cannot fix
+    /// that — a template image is recoloured by the menu bar by definition —
+    /// so the shape has to carry the distinction.
+    ///
+    /// `questionmark.circle` rather than an exclamation for the unknown state:
+    /// it is also what shows for a second or two on every launch, and an alarm
+    /// glyph flashing at each start would train you to ignore it.
     var symbolName: String {
         switch self {
-        case .neutral: return "wifi"
-        case .offline: return "wifi.slash"
-        case .warning: return "wifi.exclamationmark"
+        case .neutral: return "network"
+        case .offline: return "network.slash"
+        case .warning: return "questionmark.circle"
         }
     }
 
@@ -41,7 +61,7 @@ enum StatusIcon: CaseIterable {
         switch self {
         case .neutral: return "SimNap: all booted Simulators online"
         case .offline: return "SimNap: at least one Simulator is simulated offline"
-        case .warning: return "SimNap: Simulator status unavailable"
+        case .warning: return "SimNap: Simulator status unknown"
         }
     }
 

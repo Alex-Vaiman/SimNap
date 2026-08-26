@@ -60,7 +60,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func applyStatusIcon() {
         guard let button = statusItem.button else { return }
-        let icon = StatusIcon.resolve(statuses: statuses, refreshError: refreshError)
+        let icon = StatusIcon.resolve(
+            statuses: statuses,
+            refreshError: refreshError,
+            hasLoadedSnapshot: hasLoadedSnapshot
+        )
         button.toolTip = icon.label
         if let image = icon.image {
             button.image = image

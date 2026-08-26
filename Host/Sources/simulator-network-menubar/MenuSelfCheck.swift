@@ -89,18 +89,26 @@ enum MenuSelfCheck {
             errorDescription: "unreadable"
         )
 
-        let cases: [(String, [SimulatorDeviceStatus], String?, StatusIcon)] = [
-            ("no devices", [], nil, .neutral),
-            ("all online", [online], nil, .neutral),
-            ("one offline", [online, offline], nil, .offline),
-            ("unreadable status", [online, unreadable], nil, .warning),
-            ("refresh failed", [online], "boom", .warning),
-            ("offline plus unreadable", [offline, unreadable], nil, .warning)
+        let cases: [(String, [SimulatorDeviceStatus], String?, Bool, StatusIcon)] = [
+            // Startup, before the first snapshot returns. Nothing is known, so
+            // this must not render the same as a verified all-online.
+            ("not loaded yet", [], nil, false, .warning),
+            ("not loaded yet, stale statuses", [online], nil, false, .warning),
+            ("loaded, no devices", [], nil, true, .neutral),
+            ("all online", [online], nil, true, .neutral),
+            ("one of several offline", [online, offline], nil, true, .offline),
+            ("unreadable status", [online, unreadable], nil, true, .warning),
+            ("refresh failed", [online], "boom", true, .warning),
+            ("offline plus unreadable", [offline, unreadable], nil, true, .warning)
         ]
 
-        for (name, statuses, refreshError, expected) in cases {
+        for (name, statuses, refreshError, loaded, expected) in cases {
             checked += 1
-            let actual = StatusIcon.resolve(statuses: statuses, refreshError: refreshError)
+            let actual = StatusIcon.resolve(
+                statuses: statuses,
+                refreshError: refreshError,
+                hasLoadedSnapshot: loaded
+            )
             if actual != expected {
                 failures.append("status icon for '\(name)': expected \(expected), got \(actual)")
             }
