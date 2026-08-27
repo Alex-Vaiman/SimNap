@@ -24,7 +24,9 @@ enum ScenarioRunner {
     private static let supportedScenarios = [
         "capabilities", "state", "state-watch", "quick", "stop", "stop-start",
         "post-online", "post-offline", "start-only", "start-later", "coexistence", "coexistence-reversed", "shared-session", "headers", "redirect", "unintegrated",
-        "network-framework", "delayed-watch"
+        "network-framework", "delayed-watch",
+        "reachability", "reachability-watch", "reachability-probe-off", "reachability-probe-toggle",
+        "reachability-probe-gate-silence"
     ]
 
     private static func run(_ scenario: String) async {
@@ -259,9 +261,125 @@ enum ScenarioRunner {
             let outcome = await requestTask.value
             emit(payload(scenario: "delayed-watch", outcome: outcome, extra: [:]))
 
+        // Reachability mirrors the gate with nothing running: no monitor, no timer,
+        // no request. Reported together with the gate it was derived from.
+        case "reachability":
+            emit([
+                "scenario": "reachability",
+                "state": describe(SimulatorNetwork.state),
+                "isReachable": SimulatorNetwork.isReachable,
+                "probeEnabled": SimulatorNetwork.isReachabilityProbeEnabled
+            ])
+
+        case "reachability-watch":
+            let initial = SimulatorNetwork.isReachable
+            print("SIMNAP_READY")
+            for await value in SimulatorNetwork.reachability {
+                guard value != initial else { continue }
+                emit([
+                    "scenario": "reachability-watch",
+                    "initialIsReachable": initial,
+                    "isReachable": value,
+                    "state": describe(SimulatorNetwork.state)
+                ])
+                return
+            }
+
+        // Off by default means off. The endpoints are answering failure and the
+        // gate is online: a probe that ran would drive this to false, and one that
+        // never started leaves the gate's verdict alone and sends nothing.
+        case "reachability-probe-off":
+            ProbeEndpointProtocol.installSwizzle()
+            ProbeEndpointProtocol.shouldSucceed = false
+            let defaultEnabled = SimulatorNetwork.isReachabilityProbeEnabled
+            let initiallyReachable = SimulatorNetwork.isReachable
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            emit([
+                "scenario": "reachability-probe-off",
+                "probeEnabledByDefault": defaultEnabled,
+                "state": describe(SimulatorNetwork.state),
+                "isReachableAtStart": initiallyReachable,
+                "isReachable": SimulatorNetwork.isReachable,
+                "probeRequests": ProbeEndpointProtocol.requestCount
+            ])
+
+        // On, the probe overrides the gate's "online" with what it measured - the
+        // case it exists for, the machine unable to reach anything. Off again, the
+        // verdict returns to the gate and the traffic stops.
+        case "reachability-probe-toggle":
+            ProbeEndpointProtocol.installSwizzle()
+            ProbeEndpointProtocol.shouldSucceed = false
+            let stateAtStart = describe(SimulatorNetwork.state)
+            let beforeEnable = SimulatorNetwork.isReachable
+
+            SimulatorNetwork.isReachabilityProbeEnabled = true
+            let becameUnreachable = await waitForReachable(false, timeout: 20)
+            let requestsWhileOn = ProbeEndpointProtocol.requestCount
+
+            SimulatorNetwork.isReachabilityProbeEnabled = false
+            let afterDisable = SimulatorNetwork.isReachable
+            let requestsAtDisable = ProbeEndpointProtocol.requestCount
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+
+            emit([
+                "scenario": "reachability-probe-toggle",
+                "state": stateAtStart,
+                "isReachableBeforeEnable": beforeEnable,
+                "becameUnreachable": becameUnreachable,
+                "requestsWhileOn": requestsWhileOn,
+                "isReachableAfterDisable": afterDisable,
+                "isReachable": SimulatorNetwork.isReachable,
+                "requestsAfterDisable": ProbeEndpointProtocol.requestCount - requestsAtDisable
+            ])
+
+        // Closing the gate is not something that has to be measured. The verdict is
+        // false the moment the gate moves, and the probe is torn down for the
+        // duration - an app switched offline from the menu bar sends nothing at all.
+        // The wait after the transition is longer than the probe's own interval, so
+        // a probe still running would be caught by it.
+        case "reachability-probe-gate-silence":
+            ProbeEndpointProtocol.installSwizzle()
+            ProbeEndpointProtocol.shouldSucceed = true
+            SimulatorNetwork.isReachabilityProbeEnabled = true
+            let probeWasRunning = await waitForProbeRequests(atLeast: 2, timeout: 20)
+            print("SIMNAP_READY")
+
+            let wentUnreachable = await waitForReachable(false, timeout: 20)
+            let requestsAtTransition = ProbeEndpointProtocol.requestCount
+            try? await Task.sleep(nanoseconds: 14_000_000_000)
+
+            emit([
+                "scenario": "reachability-probe-gate-silence",
+                "probeWasRunning": probeWasRunning,
+                "wentUnreachable": wentUnreachable,
+                "state": describe(SimulatorNetwork.state),
+                "isReachable": SimulatorNetwork.isReachable,
+                "requestsWhileGateOffline": ProbeEndpointProtocol.requestCount - requestsAtTransition
+            ])
+
         default:
             emit(["scenario": scenario, "outcome": "failure", "error": "unknown-scenario"])
         }
+    }
+
+    /// Polls rather than watching the stream on purpose: the scenarios that use it
+    /// are asserting the verdict itself, and a stream bug would otherwise make them
+    /// fail for the wrong reason. `reachability-watch` covers the stream.
+    private static func waitForReachable(_ expected: Bool, timeout: TimeInterval) async -> Bool {
+        await waitUntil(timeout: timeout) { SimulatorNetwork.isReachable == expected }
+    }
+
+    private static func waitForProbeRequests(atLeast count: Int, timeout: TimeInterval) async -> Bool {
+        await waitUntil(timeout: timeout) { ProbeEndpointProtocol.requestCount >= count }
+    }
+
+    private static func waitUntil(timeout: TimeInterval, _ condition: () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return condition()
     }
 
     /// Guards the single resume across the connection handler and the timeout.

@@ -195,6 +195,32 @@ run_state_watch_after_record_reset() {
   printf '%s\n' "$result"
 }
 
+# Spawns a scenario that announces SIMNAP_READY, moves the gate while it is
+# still running, and returns the JSON payload it ends with.
+run_scenario_across_gate_change() {
+  local udid=$1 scenario=$2 gate=$3 error=${4:-timedOut}
+  local exec_path outfile pid waited result
+  exec_path=$(app_exec_path "$udid")
+  outfile=$(mktemp)
+  SIMCTL_CHILD_SIMNAP_SCENARIO="$scenario" xcrun simctl spawn "$udid" "$exec_path" >"$outfile" 2>&1 &
+  pid=$!
+  waited=0
+  while ! grep -q "SIMNAP_READY" "$outfile" 2>/dev/null; do
+    sleep 0.1
+    waited=$((waited + 1))
+    [ "$waited" -gt 200 ] && break
+  done
+  if [ "$gate" = "offline" ]; then
+    "$CLI" offline --device "$udid" --error "$error" >/dev/null
+  else
+    "$CLI" online --device "$udid" >/dev/null
+  fi
+  wait "$pid" 2>/dev/null || true
+  result=$(grep "SIMNAP_RESULT " "$outfile" | tail -1 | sed 's/^SIMNAP_RESULT //')
+  rm -f "$outfile"
+  printf '%s\n' "$result"
+}
+
 # A `defaults` write inside a Simulator is propagated by cfprefsd, which can
 # lag under load — booting a second Simulator, for instance. Polls the state a
 # fresh app process actually sees, and still returns the last value it read so
@@ -217,7 +243,7 @@ install_app "$PRIMARY_UDID"
 # instead would pass happily against a stale install that still answers `state`
 # but knows nothing of, say, `stop-start`.
 log "Checking the installed app supports every scenario this suite uses..."
-REQUIRED_SCENARIOS="state state-watch quick stop stop-start headers redirect post-online post-offline start-only start-later coexistence coexistence-reversed shared-session unintegrated network-framework delayed-watch"
+REQUIRED_SCENARIOS="state state-watch quick stop stop-start headers redirect post-online post-offline start-only start-later coexistence coexistence-reversed shared-session unintegrated network-framework delayed-watch reachability reachability-watch reachability-probe-off reachability-probe-toggle reachability-probe-gate-silence"
 CAPABILITIES=$(run_scenario "$PRIMARY_UDID" capabilities)
 if [ -z "$CAPABILITIES" ]; then
   abort "the installed app emitted no SIMNAP_RESULT for 'capabilities' — it is stale or crashed on launch"
@@ -538,6 +564,58 @@ else
 fi
 kill "$MENUBAR_PID_2" 2>/dev/null || true
 fi
+
+echo
+log "=== I. Reachability ==="
+
+# The gate is what the app experiences, so it is what reachability reports —
+# `NWPathMonitor` sees an untouched interface straight through a simulated
+# outage and would report `satisfied` for all of these.
+"$CLI" online --device "$PRIMARY_UDID" >/dev/null
+REACH_ONLINE=$(run_scenario "$PRIMARY_UDID" reachability)
+assert_true "reachable while the gate is online" "$(echo "$REACH_ONLINE" | jq -r '.isReachable')"
+assert_eq "the probe is off until someone turns it on" "false" "$(echo "$REACH_ONLINE" | jq -r '.probeEnabled')"
+
+"$CLI" offline --device "$PRIMARY_UDID" --error notConnectedToInternet >/dev/null
+REACH_OFFLINE=$(run_scenario "$PRIMARY_UDID" reachability)
+assert_eq "unreachable while the gate is offline" "false" "$(echo "$REACH_OFFLINE" | jq -r '.isReachable')"
+
+# The stream, and that it reaches a process that was already running.
+"$CLI" online --device "$PRIMARY_UDID" >/dev/null
+REACH_WATCH=$(run_scenario_across_gate_change "$PRIMARY_UDID" reachability-watch offline)
+assert_true "a live process starts out reachable" "$(echo "$REACH_WATCH" | jq -r '.initialIsReachable')"
+assert_eq "the gate closing is published to a live subscriber" "false" "$(echo "$REACH_WATCH" | jq -r '.isReachable')"
+
+# Off by default has to mean nothing runs. The endpoints answer failure for the
+# whole of this check: a probe that started would drive the verdict to false,
+# and one that never started sends nothing.
+"$CLI" online --device "$PRIMARY_UDID" >/dev/null
+PROBE_OFF=$(run_scenario "$PRIMARY_UDID" reachability-probe-off)
+assert_eq "the probe defaults to off" "false" "$(echo "$PROBE_OFF" | jq -r '.probeEnabledByDefault')"
+assert_eq "an untouched probe sends nothing" "0" "$(echo "$PROBE_OFF" | jq -r '.probeRequests')"
+assert_true "with the probe off the verdict is the gate's alone" "$(echo "$PROBE_OFF" | jq -r '.isReachable')"
+
+# Switched on, the probe overrides the gate's "online" with what it measured —
+# the case it exists for, a host machine that cannot reach anything. Switched
+# off, the verdict returns to the gate and the traffic stops.
+PROBE_TOGGLE=$(run_scenario "$PRIMARY_UDID" reachability-probe-toggle)
+assert_true "the probe reports unreachable while the gate says online" "$(echo "$PROBE_TOGGLE" | jq -r '.becameUnreachable')"
+assert_true "the probe measured rather than guessed" \
+  "$([ "$(echo "$PROBE_TOGGLE" | jq -r '.requestsWhileOn')" -ge 2 ] && echo true || echo false)"
+assert_true "switching the probe off returns the verdict to the gate" "$(echo "$PROBE_TOGGLE" | jq -r '.isReachableAfterDisable')"
+assert_eq "a switched-off probe stops sending" "0" "$(echo "$PROBE_TOGGLE" | jq -r '.requestsAfterDisable')"
+
+# Closing the gate is not something that has to be measured: the verdict is
+# false the moment it moves, and the probe is torn down for the duration. The
+# scenario then waits longer than the probe's own interval, so one still running
+# would be caught.
+"$CLI" online --device "$PRIMARY_UDID" >/dev/null
+PROBE_SILENCE=$(run_scenario_across_gate_change "$PRIMARY_UDID" reachability-probe-gate-silence offline)
+assert_true "the probe was running before the gate closed" "$(echo "$PROBE_SILENCE" | jq -r '.probeWasRunning')"
+assert_eq "the gate closing is enough on its own" "false" "$(echo "$PROBE_SILENCE" | jq -r '.isReachable')"
+assert_eq "a closed gate silences the probe entirely" "0" "$(echo "$PROBE_SILENCE" | jq -r '.requestsWhileGateOffline')"
+
+"$CLI" online --device "$PRIMARY_UDID" >/dev/null
 
 echo
 log "=== H. Application bundle ==="

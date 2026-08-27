@@ -1,7 +1,7 @@
 # SimNap
 
 <p align="center">
-  <strong>Deterministic offline testing for iOS Simulator apps.</strong><br>
+  <strong>Deterministic offline testing and app-aware reachability for iOS Simulator.</strong><br>
   Toggle one Simulator from the menu bar or CLI and every integrated app reacts immediately.
 </p>
 
@@ -23,6 +23,8 @@ including an app that cold-launches while the Simulator is already offline.
 - **Reliable cold launches:** persisted state is reconciled before new traffic starts.
 - **Real transport failures:** requests fail with `timedOut` or
   `notConnectedToInternet`, not a UI-only reachability flag.
+- **App-aware reachability:** observe the same simulated network state that
+  controls the app's requests, with an optional real-connectivity probe.
 - **One-line app integration:** call `SimulatorNetwork.start()` at launch.
 - **Two control surfaces:** use the `simnap` CLI or the optional menu bar app.
 - **Tested end to end:** the verification suite drives real processes and real
@@ -145,6 +147,44 @@ for await state in SimulatorNetwork.states {
 
 State observation is for UI only — transport enforcement happens inside the
 package regardless of whether anything observes `states`.
+
+## App-aware reachability
+
+Traditional reachability APIs observe the network interface. SimNap operates
+inside the URL Loading System, so the interface can remain healthy while every
+request from the integrated app is intentionally failing. `NWPathMonitor` may
+therefore report `satisfied` during a simulated outage.
+
+SimNap exposes the verdict the app actually experiences:
+
+```swift
+let isReachable = SimulatorNetwork.isReachable
+
+for await isReachable in SimulatorNetwork.reachability {
+    // Update retry UI, banners, logging, or diagnostics.
+}
+```
+
+By default, reachability mirrors the SimNap gate and performs no background
+work. Enable the optional probe when the Simulator should also detect that the
+host Mac has lost real internet connectivity:
+
+```swift
+SimulatorNetwork.isReachabilityProbeEnabled = true
+```
+
+The probe starts only when explicitly enabled. It stops sending requests while
+the SimNap gate is offline, because the gate already provides the definitive
+answer, and resumes with a fresh session when the gate returns online.
+
+On a physical device the package remains a pass-through: `isReachable` is
+`true`, the stream yields once and finishes, and enabling the probe has no
+effect. Combine it with the app's existing device reachability when sharing
+the same code path:
+
+```swift
+let isReachable = appReachability.isReachable && SimulatorNetwork.isReachable
+```
 
 ## CLI
 
@@ -270,6 +310,9 @@ Covers:
 - CLI behavior, generation ordering, idempotent re-application, corrupt-record
   repair, and a running app accepting a new record epoch.
 - The cold-launch guarantee and both simulated error modes.
+- Reachability mirroring the live gate, delivery to already-running observers,
+  opt-in probing, probe shutdown while offline, and recovery when probing is
+  disabled again.
 - `stop()` leaving pass-through, and an explicit `start()` re-applying the
   persisted record.
 - Header, redirect, and **POST body** round-trips while online, asserting the

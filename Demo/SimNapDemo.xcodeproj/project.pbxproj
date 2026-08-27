@@ -13,6 +13,7 @@
 		B0D1DDF9029D4BCD8A1F3F0E /* RequestClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B7082CCF50D4816A049F65D /* RequestClient.swift */; };
 		E993B251EC804815AC2A6A9E /* ScenarioRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8941F2BD073B478BB20BABCE /* ScenarioRunner.swift */; };
 		537F974F443F46B8A36ECC2A /* HostAppProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = C301FCC20CE54A529EE12438 /* HostAppProtocol.swift */; };
+		B7E4A1C25D3F48A19C0E7722 /* ProbeEndpointProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7E4A1C25D3F48A19C0E7721 /* ProbeEndpointProtocol.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -22,6 +23,7 @@
 		7B7082CCF50D4816A049F65D /* RequestClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RequestClient.swift; sourceTree = "<group>"; };
 		8941F2BD073B478BB20BABCE /* ScenarioRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScenarioRunner.swift; sourceTree = "<group>"; };
 		C301FCC20CE54A529EE12438 /* HostAppProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostAppProtocol.swift; sourceTree = "<group>"; };
+		B7E4A1C25D3F48A19C0E7721 /* ProbeEndpointProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProbeEndpointProtocol.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -60,6 +62,7 @@
 				7B7082CCF50D4816A049F65D /* RequestClient.swift */,
 				8941F2BD073B478BB20BABCE /* ScenarioRunner.swift */,
 				C301FCC20CE54A529EE12438 /* HostAppProtocol.swift */,
+				B7E4A1C25D3F48A19C0E7721 /* ProbeEndpointProtocol.swift */,
 			);
 			path = SimNapDemo;
 			sourceTree = "<group>";
@@ -139,6 +142,7 @@
 				B0D1DDF9029D4BCD8A1F3F0E /* RequestClient.swift in Sources */,
 				E993B251EC804815AC2A6A9E /* ScenarioRunner.swift in Sources */,
 				537F974F443F46B8A36ECC2A /* HostAppProtocol.swift in Sources */,
+				B7E4A1C25D3F48A19C0E7722 /* ProbeEndpointProtocol.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
